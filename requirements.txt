@@ -1,0 +1,14 @@
+# DA-RAG Studio Core Dependencies
+streamlit>=1.35.0
+pandas>=2.0.0
+pytest>=8.0.0
+pydantic>=2.0.0
+
+# Deep Learning & Transformers (for live local LLM inference)
+torch>=2.1.0
+transformers>=4.40.0
+accelerate>=0.28.0
+
+# Graph Analytics & Visualization
+networkx>=3.0
+altair>=5.0.0

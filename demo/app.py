@@ -1,1540 +1,885 @@
 """
-DA-RAG Studio: Dual-Method Code Generation & Context Retrieval Test Bench.
-A research-grade web application comparing Baseline (None / Zero Retrieval)
-versus DA-RAG (Dependency Graph Retrieval) powered by Qwen2.5-Coder-1.5B-Instruct.
+DA-RAG Studio: Repository-Level Code Generation & Functional Testing Test Bench.
+A single-page, live demonstration platform comparing:
+- Baseline (none): Zero Repository Context
+- DA-RAG-B (darag_b): AST Dependency Graph Retrieval & Budget Knapsack Packing
+Powered by local Qwen2.5-Coder-1.5B-Instruct and Real Isolated Pytest Test Execution.
 """
 
-import sys
+from __future__ import annotations
+
 import os
+import sys
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 import streamlit as st
 import pandas as pd
 
-import data_loader
-import evaluator
-import dag_visualizer
+import repo_manager
+import context_engine
 import interactive_runner
-import repo_indexer
+import test_runner
+import dag_visualizer
 
 # ─── Page Configuration ──────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="DA-RAG Studio · Dual-Method Code Generation",
+    page_title="DA-RAG Studio · Repository-Level Code Generation Test Bench",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
 # ─── Global Design System & CSS ──────────────────────────────────────────────
-# Implements modern web development best practices:
-# 1. `dark-mode`: color-scheme: dark on :root, html, body ensures native form controls
-#    and scrollbars adhere to dark theme.
-# 2. `color`: WCAG AA/AAA compliant contrast ratios (>4.5:1 text, >3:1 UI borders).
-#    State is conveyed with iconography + text badges, never color alone.
-# 3. Streamlit enclosure: bulletproof CSS overrides that eliminate light-theme leaks.
 st.markdown("""
 <style>
-/* ── 1. DESIGN TOKENS ──────────────────────────────────────────────────────── */
+/* ── DESIGN TOKENS ── */
 :root {
     color-scheme: dark !important;
-
-    /* Backgrounds */
     --canvas: #07090E;
     --surface-1: #0D121F;
     --surface-2: #131A2B;
     --surface-3: #1A233A;
 
-    /* Borders */
     --border-subtle: rgba(255, 255, 255, 0.08);
-    --border-mid: rgba(255, 255, 255, 0.14);
+    --border-mid: rgba(255, 255, 255, 0.15);
     --border-focus: #6366F1;
 
-    /* Accents */
     --brand-500: #6366F1;
     --brand-400: #818CF8;
-    --brand-glow: rgba(99, 102, 241, 0.22);
+    --brand-glow: rgba(99, 102, 241, 0.25);
 
-    /* Semantic DAG (Emerald) */
     --dag-500: #10B981;
     --dag-400: #34D399;
     --dag-bg: rgba(16, 185, 129, 0.1);
-    --dag-glow: rgba(16, 185, 129, 0.2);
+    --dag-border: rgba(16, 185, 129, 0.35);
 
-    /* Semantic None (Rose/Red) */
     --none-500: #EF4444;
     --none-400: #F87171;
     --none-bg: rgba(239, 68, 68, 0.1);
-    --none-glow: rgba(239, 68, 68, 0.18);
+    --none-border: rgba(239, 68, 68, 0.35);
 
-    /* Text */
+    --warn-500: #F59E0B;
+    --warn-400: #FBBF24;
+    --warn-bg: rgba(245, 158, 11, 0.12);
+
     --text-pure: #FFFFFF;
     --text-primary: #F8FAFC;
     --text-secondary: #CBD5E1;
     --text-muted: #94A3B8;
 
-    /* Typography */
     --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
-
-    /* Scrollbars (dark-mode guide) */
-    --scrollbar-track: #0B0F19;
-    --scrollbar-thumb: #334155;
-    scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
-    scrollbar-width: thin;
 }
 
-/* ── 2. STREAMLIT APP ENCLOSURE (FORCES TOTAL DARK MODE) ───────────────────── */
-html, body {
+html, body, .stApp {
     background-color: var(--canvas) !important;
     color: var(--text-primary) !important;
     font-family: var(--font-sans) !important;
-    margin: 0;
-    padding: 0;
 }
 
-.stApp,
-[data-testid="stAppViewContainer"],
-[data-testid="stHeader"],
-[data-testid="stSidebar"],
-[data-testid="stSidebarContent"],
-[data-testid="stBottom"],
-[data-testid="stToolbar"],
-.main,
-.block-container,
-[data-testid="stVerticalBlock"],
-[data-testid="stHorizontalBlock"] {
-    background-color: var(--canvas) !important;
-    color: var(--text-primary) !important;
+.main .block-container {
+    padding: 1.5rem 2.5rem 4rem !important;
+    max-width: 1480px !important;
 }
 
-/* Remove default Streamlit top header whitespace */
 header[data-testid="stHeader"] {
     background: var(--canvas) !important;
     border-bottom: 1px solid var(--border-subtle) !important;
-    height: 3.2rem !important;
 }
 
-/* Main container layout */
-.main .block-container {
-    padding: 1.5rem 3rem 4rem !important;
-    max-width: 1440px !important;
-}
-
-/* Modern typography import */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
-
-html, body, [class*="css"], .stMarkdown, .stText {
-    font-family: var(--font-sans) !important;
-    -webkit-font-smoothing: antialiased;
-}
-code, pre, .stCode * {
-    font-family: var(--font-mono) !important;
-}
-
-/* ── 3. TOP APP BAR ────────────────────────────────────────────────────────── */
-.app-header-strip {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 14px 20px;
-    background: var(--surface-1);
-    border: 1px solid var(--border-subtle);
-    border-radius: 14px;
-    margin-bottom: 24px;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
-}
-.app-brand {
+/* ── STEP HEADER BAR ── */
+.step-banner {
     display: flex;
     align-items: center;
     gap: 12px;
-}
-.brand-logo-badge {
-    width: 36px;
-    height: 36px;
-    border-radius: 10px;
-    background: linear-gradient(135deg, #6366F1, #8B5CF6);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 18px;
-    box-shadow: 0 0 16px var(--brand-glow);
-}
-.brand-name {
-    font-size: 1.25rem;
-    font-weight: 800;
-    letter-spacing: -0.02em;
-    color: var(--text-pure);
-}
-.brand-sub {
-    font-size: 0.72rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    background: rgba(99, 102, 241, 0.15);
-    color: var(--brand-400);
-    padding: 2px 8px;
+    padding: 10px 18px;
+    margin: 28px 0 16px 0;
+    background: linear-gradient(90deg, var(--surface-2) 0%, var(--surface-1) 100%);
+    border-left: 4px solid var(--brand-500);
     border-radius: 6px;
-    border: 1px solid rgba(99, 102, 241, 0.3);
+    border-top: 1px solid var(--border-subtle);
+    border-right: 1px solid var(--border-subtle);
+    border-bottom: 1px solid var(--border-subtle);
 }
-.telemetry-group {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
-}
-.telemetry-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    background: var(--surface-2);
-    border: 1px solid var(--border-subtle);
-    border-radius: 8px;
-    padding: 5px 12px;
-    font-size: 0.78rem;
-    font-weight: 500;
-    color: var(--text-secondary);
-}
-.telemetry-chip strong {
-    color: var(--text-primary);
-}
-.pulse-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: #10B981;
-    box-shadow: 0 0 8px #10B981;
-    display: inline-block;
-}
-
-/* ── 4. HERO SECTION ───────────────────────────────────────────────────────── */
-.hero-box {
-    margin-bottom: 24px;
-    padding: 8px 4px;
-}
-.hero-tag {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 0.72rem;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--brand-400);
-    margin-bottom: 8px;
-}
-.hero-heading {
-    font-size: 2.1rem;
+.step-number {
+    background: var(--brand-500);
+    color: #FFFFFF;
     font-weight: 800;
-    letter-spacing: -0.03em;
-    line-height: 1.2;
-    margin-bottom: 10px;
-    background: linear-gradient(135deg, #FFFFFF 0%, #E2E8F0 60%, #94A3B8 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
+    font-size: 0.8rem;
+    padding: 3px 8px;
+    border-radius: 4px;
+    letter-spacing: 0.05em;
 }
-.hero-lead {
-    font-size: 1.0rem;
-    color: var(--text-secondary);
-    max-width: 820px;
-    line-height: 1.6;
-}
-
-/* ── 5. STREAMLIT WIDGETS OVERRIDES ────────────────────────────────────────── */
-/* Tabs as modern segmented pill control */
-div[data-baseweb="tab-list"] {
-    background: var(--surface-1) !important;
-    border: 1px solid var(--border-subtle) !important;
-    border-radius: 12px !important;
-    padding: 6px !important;
-    gap: 6px !important;
-    width: fit-content !important;
-    margin-bottom: 24px !important;
-}
-div[data-baseweb="tab"] {
-    background: transparent !important;
-    border: none !important;
-    border-radius: 8px !important;
-    padding: 8px 20px !important;
-    color: var(--text-muted) !important;
-    font-weight: 600 !important;
-    font-size: 0.92rem !important;
-    transition: all 0.15s ease-in-out !important;
-}
-div[data-baseweb="tab"]:hover {
-    color: var(--text-primary) !important;
-    background: rgba(255, 255, 255, 0.04) !important;
-}
-div[data-baseweb="tab"][aria-selected="true"] {
-    background: var(--surface-3) !important;
-    color: var(--text-pure) !important;
-    font-weight: 700 !important;
-    border: 1px solid rgba(255, 255, 255, 0.12) !important;
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3) !important;
-}
-div[data-baseweb="tab-border"],
-div[data-baseweb="tab-highlight"] {
-    display: none !important;
-}
-
-/* Selectbox */
-div[data-baseweb="select"] {
-    background-color: var(--surface-1) !important;
-    border: 1px solid var(--border-subtle) !important;
-    border-radius: 10px !important;
-}
-div[data-baseweb="select"] > div {
-    background-color: var(--surface-1) !important;
-    border: none !important;
-    color: var(--text-primary) !important;
-}
-div[data-baseweb="select"] * {
-    color: var(--text-primary) !important;
-}
-div[data-baseweb="popover"],
-ul[role="listbox"],
-li[role="option"] {
-    background-color: var(--surface-2) !important;
-    color: var(--text-primary) !important;
-    border-color: var(--border-subtle) !important;
-}
-li[role="option"]:hover,
-li[aria-selected="true"] {
-    background-color: var(--surface-3) !important;
-    color: #60A5FA !important;
-}
-
-/* Text Area */
-div[data-baseweb="textarea"],
-div[data-baseweb="textarea"] > div,
-textarea {
-    background-color: #0A0E17 !important;
-    color: var(--text-primary) !important;
-    border: 1px solid var(--border-subtle) !important;
-    border-radius: 10px !important;
-    font-family: var(--font-mono) !important;
-    font-size: 0.88rem !important;
-    line-height: 1.5 !important;
-}
-textarea:focus {
-    border-color: var(--brand-500) !important;
-    box-shadow: 0 0 0 2px var(--brand-glow) !important;
-}
-
-/* Buttons */
-.stButton > button {
-    background: linear-gradient(135deg, #6366F1 0%, #4F46E5 100%) !important;
-    color: #FFFFFF !important;
-    border: 1px solid rgba(255, 255, 255, 0.15) !important;
-    border-radius: 10px !important;
-    font-weight: 700 !important;
-    font-size: 0.95rem !important;
-    padding: 0.65rem 1.6rem !important;
-    letter-spacing: -0.01em !important;
-    box-shadow: 0 4px 16px var(--brand-glow) !important;
-    transition: all 0.2s ease !important;
-    width: 100% !important;
-}
-.stButton > button:hover {
-    transform: translateY(-1px) !important;
-    box-shadow: 0 6px 24px rgba(99, 102, 241, 0.45) !important;
-    background: linear-gradient(135deg, #7175F3 0%, #5850EC 100%) !important;
-}
-
-/* Code blocks */
-div[data-testid="stCode"],
-.stCode > div {
-    background: #0A0E17 !important;
-    border: 1px solid var(--border-subtle) !important;
-    border-radius: 10px !important;
-}
-
-/* Expanders */
-details[data-testid="stExpander"] {
-    background: var(--surface-1) !important;
-    border: 1px solid var(--border-subtle) !important;
-    border-radius: 10px !important;
-}
-details[data-testid="stExpander"] summary {
-    color: var(--text-secondary) !important;
-    font-weight: 600 !important;
-    font-size: 0.88rem !important;
-}
-
-/* Checkbox */
-div[data-testid="stCheckbox"] label {
-    color: var(--text-secondary) !important;
-    font-weight: 500 !important;
-    font-size: 0.9rem !important;
-}
-
-/* Radio selection buttons (Modern Pills) */
-div[data-testid="stRadio"] > div {
-    gap: 10px !important;
-}
-div[data-testid="stRadio"] label {
-    background: var(--surface-1) !important;
-    border: 1px solid var(--border-subtle) !important;
-    padding: 8px 16px !important;
-    border-radius: 10px !important;
-    cursor: pointer !important;
-    transition: all 0.15s ease !important;
-}
-div[data-testid="stRadio"] label:hover {
-    border-color: var(--brand-500) !important;
-    background: var(--surface-2) !important;
-}
-div[data-testid="stRadio"] label[data-checked="true"],
-div[data-testid="stRadio"] label:has(input:checked) {
-    border-color: var(--brand-500) !important;
-    background: rgba(99, 102, 241, 0.15) !important;
-    box-shadow: 0 0 12px var(--brand-glow) !important;
-}
-
-/* File uploader container */
-div[data-testid="stFileUploader"] {
-    background-color: var(--surface-1) !important;
-    border: 1.5px dashed var(--border-mid) !important;
-    border-radius: 12px !important;
-    padding: 16px !important;
-    transition: border-color 0.2s ease !important;
-}
-div[data-testid="stFileUploader"]:hover {
-    border-color: var(--brand-400) !important;
-}
-div[data-testid="stFileUploader"] section {
-    background-color: transparent !important;
-}
-div[data-testid="stFileUploader"] button {
-    background: var(--surface-2) !important;
-    color: var(--text-primary) !important;
-    border: 1px solid var(--border-mid) !important;
-}
-
-/* Repository status box */
-.repo-status-box {
-    background: var(--surface-1);
-    border: 1px solid rgba(16, 185, 129, 0.35);
-    border-radius: 12px;
-    padding: 14px 20px;
-    margin: 12px 0 18px 0;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 12px;
-    box-shadow: 0 0 20px var(--dag-glow);
-}
-
-/* ── 6. COMPONENT CARDS ────────────────────────────────────────────────────── */
-
-/* Insight Callout */
-.insight-deck {
-    background: rgba(99, 102, 241, 0.08);
-    border: 1px solid rgba(99, 102, 241, 0.25);
-    border-radius: 12px;
-    padding: 16px 20px;
-    display: flex;
-    gap: 12px;
-    align-items: flex-start;
-}
-.insight-icon {
-    font-size: 20px;
-    line-height: 1;
-}
-.insight-title {
-    font-size: 0.76rem;
+.step-title {
+    font-size: 1.05rem;
     font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--brand-400);
-    margin-bottom: 4px;
+    color: var(--text-pure);
+    letter-spacing: -0.01em;
 }
-.insight-text {
-    font-size: 0.88rem;
-    color: var(--text-secondary);
-    line-height: 1.55;
+.step-sub {
+    font-size: 0.83rem;
+    color: var(--text-muted);
+    margin-left: auto;
 }
 
-/* Verdict Banner */
-.verdict-box {
-    position: relative;
-    border-radius: 14px;
-    padding: 22px 26px;
-    margin-bottom: 26px;
-    border: 1.5px solid;
-}
-.verdict-dag-win {
-    background: linear-gradient(135deg, rgba(16, 185, 129, 0.12) 0%, rgba(6, 78, 59, 0.25) 100%);
-    border-color: var(--dag-500);
-    box-shadow: 0 0 35px var(--dag-glow);
-}
-.verdict-none-win {
-    background: linear-gradient(135deg, rgba(239, 68, 68, 0.12) 0%, rgba(127, 29, 29, 0.25) 100%);
-    border-color: var(--none-500);
-    box-shadow: 0 0 35px var(--none-glow);
-}
-.verdict-tie-win {
+/* ── CARDS & PANELS ── */
+.panel-card {
     background: var(--surface-1);
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
+    padding: 18px 22px;
+    margin-bottom: 16px;
+}
+.panel-card:hover {
     border-color: var(--border-mid);
 }
-.verdict-header-row {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex-wrap: wrap;
-    margin-bottom: 8px;
-}
-.verdict-lead {
-    font-size: 1.45rem;
-    font-weight: 800;
-    color: var(--text-pure);
-    letter-spacing: -0.02em;
-}
-.verdict-pill {
-    font-size: 0.85rem;
-    font-weight: 700;
-    padding: 3px 12px;
-    border-radius: 20px;
-}
-.verdict-pill-dag {
-    background: var(--dag-bg);
-    color: var(--dag-400);
-    border: 1px solid rgba(16, 185, 129, 0.4);
-}
-.verdict-pill-none {
-    background: var(--none-bg);
-    color: var(--none-400);
-    border: 1px solid rgba(239, 68, 68, 0.4);
-}
-.verdict-pill-tie {
-    background: rgba(245, 158, 11, 0.12);
-    color: #FBBF24;
-    border: 1px solid rgba(245, 158, 11, 0.3);
-}
-.verdict-explanation {
-    font-size: 0.92rem;
-    color: var(--text-secondary);
-    line-height: 1.6;
-    max-width: 960px;
-}
 
-/* Stage Heading Strip */
-.stage-strip {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    font-size: 0.72rem;
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--text-muted);
-    margin: 32px 0 14px;
-}
-.stage-strip::after {
-    content: '';
-    flex: 1;
-    height: 1px;
-    background: var(--border-subtle);
-}
-.stage-title {
-    font-size: 1.25rem;
-    font-weight: 800;
-    color: var(--text-primary);
-    letter-spacing: -0.02em;
-    margin-bottom: 4px;
-}
-
-/* Dual Column Comparison Card */
-.comparison-card {
-    background: var(--surface-1);
-    border: 1.5px solid var(--border-subtle);
-    border-radius: 14px;
-    overflow: hidden;
-    height: 100%;
-}
-.comparison-card-dag {
-    border-color: rgba(16, 185, 129, 0.45);
-    box-shadow: 0 0 20px rgba(16, 185, 129, 0.08);
-}
-.comparison-card-none {
-    border-color: rgba(239, 68, 68, 0.3);
-}
-.comparison-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 14px 18px;
-    border-bottom: 1px solid var(--border-subtle);
-}
-.comparison-header-dag {
-    background: rgba(16, 185, 129, 0.08);
-}
-.comparison-header-none {
-    background: rgba(239, 68, 68, 0.06);
-}
-.comparison-header-title {
-    font-size: 0.88rem;
-    font-weight: 700;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-.comparison-header-dag .comparison-header-title {
-    color: var(--dag-400);
-}
-.comparison-header-none .comparison-header-title {
-    color: var(--none-400);
-}
-
-.token-chip {
-    font-size: 0.75rem;
-    font-weight: 700;
-    padding: 3px 10px;
-    border-radius: 6px;
-    font-family: var(--font-mono);
-}
-.token-chip-dag {
-    background: var(--dag-bg);
-    color: var(--dag-400);
-    border: 1px solid rgba(16, 185, 129, 0.35);
-}
-.token-chip-none {
-    background: var(--none-bg);
-    color: var(--none-400);
-    border: 1px solid rgba(239, 68, 68, 0.3);
-}
-
-/* Empty State Card */
-.zero-context-void {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 45px 24px;
-    text-align: center;
-    border: 1.5px dashed rgba(255, 255, 255, 0.12);
-    border-radius: 12px;
-    margin: 16px;
-    background: rgba(0, 0, 0, 0.2);
-}
-.zero-context-icon {
-    font-size: 32px;
-    margin-bottom: 10px;
-}
-.zero-context-heading {
-    font-size: 0.95rem;
-    font-weight: 700;
-    color: var(--text-primary);
-    margin-bottom: 6px;
-}
-.zero-context-sub {
-    font-size: 0.82rem;
-    color: var(--text-muted);
-    max-width: 360px;
-    line-height: 1.5;
-}
-
-/* Generation Telemetry Strip */
-.gen-telemetry {
-    display: flex;
-    gap: 16px;
-    padding: 8px 18px;
-    background: var(--surface-2);
-    border-bottom: 1px solid var(--border-subtle);
-    font-size: 0.75rem;
-    color: var(--text-muted);
-    font-family: var(--font-mono);
-}
-.gen-telemetry strong {
-    color: var(--text-secondary);
-}
-
-/* Status Badges */
+/* ── STATUS PILLS & BADGES ── */
 .status-pill {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    font-size: 0.75rem;
-    font-weight: 700;
-    padding: 3px 10px;
+    padding: 4px 10px;
     border-radius: 6px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
 }
-.status-pill-pass {
+.status-pass {
     background: var(--dag-bg);
     color: var(--dag-400);
-    border: 1px solid rgba(16, 185, 129, 0.4);
+    border: 1px solid var(--dag-border);
 }
-.status-pill-fail {
+.status-fail {
     background: var(--none-bg);
     color: var(--none-400);
-    border: 1px solid rgba(239, 68, 68, 0.4);
+    border: 1px solid var(--none-border);
+}
+.status-timeout {
+    background: var(--warn-bg);
+    color: var(--warn-400);
+    border: 1px solid rgba(245, 158, 11, 0.4);
+}
+.status-infra {
+    background: rgba(148, 163, 184, 0.12);
+    color: var(--text-muted);
+    border: 1px solid rgba(148, 163, 184, 0.3);
+}
+.status-notrun {
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-muted);
+    border: 1px solid var(--border-subtle);
 }
 
-/* Scorecard Grid */
-.score-deck {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 16px;
-    margin-bottom: 24px;
-}
-.score-deck-cell {
+/* ── SIDE-BY-SIDE PANELS ── */
+.method-card-none {
     background: var(--surface-1);
-    border: 1px solid var(--border-subtle);
-    border-radius: 14px;
-    padding: 20px;
-    text-align: center;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.25);
-}
-.score-deck-cell-dag {
-    border-color: rgba(16, 185, 129, 0.45);
-    box-shadow: 0 0 25px var(--dag-glow);
-}
-.score-cell-label {
-    font-size: 0.72rem;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--text-muted);
-    margin-bottom: 6px;
-}
-.score-cell-number {
-    font-size: 2.8rem;
-    font-weight: 800;
-    letter-spacing: -0.04em;
-    line-height: 1;
-    margin-bottom: 6px;
-    font-family: var(--font-sans);
-}
-.score-cell-number-dag { color: var(--dag-400); }
-.score-cell-number-none { color: var(--none-400); }
-.score-cell-number-delta { color: var(--brand-400); }
-.score-cell-sub {
-    font-size: 0.76rem;
-    color: var(--text-muted);
-}
-
-/* Progress Bars (semantic and accessible per `dark-mode` & `color` guides) */
-.dim-grid-box {
-    background: var(--surface-1);
-    border: 1px solid var(--border-subtle);
-    border-radius: 14px;
+    border: 1px solid var(--none-border);
+    border-radius: 10px;
     padding: 16px 20px;
 }
-.dim-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 12px 0;
-    border-bottom: 1px solid var(--border-subtle);
+.method-card-dag {
+    background: var(--surface-1);
+    border: 1px solid var(--dag-border);
+    border-radius: 10px;
+    padding: 16px 20px;
 }
-.dim-row:last-child {
-    border-bottom: none;
-}
-.dim-name {
-    font-size: 0.88rem;
-    font-weight: 600;
-    color: var(--text-primary);
-    min-width: 260px;
-}
-.dim-bars {
-    flex: 1;
-    max-width: 600px;
-}
-.dim-single-bar {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-bottom: 4px;
-}
-.dim-tag {
-    font-size: 0.7rem;
+.method-header-none {
+    color: var(--none-400);
+    font-size: 0.95rem;
     font-weight: 700;
-    width: 38px;
-    text-align: right;
-    font-family: var(--font-mono);
-}
-.dim-tag-none { color: var(--none-400); }
-.dim-tag-dag  { color: var(--dag-400); }
-.dim-val {
-    font-size: 0.75rem;
-    font-weight: 700;
-    width: 40px;
-    font-family: var(--font-mono);
-}
-
-progress.modern-bar {
-    appearance: none;
-    -webkit-appearance: none;
-    border: 0;
-    height: 8px;
-    flex: 1;
-    border-radius: 9999px;
-    background: var(--surface-3);
-    overflow: hidden;
-}
-progress.modern-bar::-webkit-progress-bar { background: transparent; }
-progress.modern-bar.bar-none::-webkit-progress-value {
-    background: var(--none-500);
-    border-radius: 9999px;
-}
-progress.modern-bar.bar-dag::-webkit-progress-value {
-    background: var(--dag-500);
-    border-radius: 9999px;
-}
-progress.modern-bar.bar-none::-moz-progress-bar {
-    background: var(--none-500);
-    border-radius: 9999px;
-}
-progress.modern-bar.bar-dag::-moz-progress-bar {
-    background: var(--dag-500);
-    border-radius: 9999px;
-}
-
-/* Footer */
-.app-footer {
-    margin-top: 50px;
-    padding-top: 20px;
-    border-top: 1px solid var(--border-subtle);
     display: flex;
     justify-content: space-between;
     align-items: center;
-    flex-wrap: wrap;
-    gap: 12px;
+    margin-bottom: 12px;
 }
-.footer-text {
-    font-size: 0.8rem;
-    color: var(--text-muted);
-}
-.footer-tag {
-    font-size: 0.72rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    padding: 3px 10px;
-    border-radius: 6px;
-    background: var(--dag-bg);
+.method-header-dag {
     color: var(--dag-400);
-    border: 1px solid rgba(16, 185, 129, 0.3);
+    font-size: 0.95rem;
+    font-weight: 700;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+/* ── SUMMARY STAT CALLOUT ── */
+.summary-deck {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+    margin: 16px 0;
+}
+.summary-card {
+    background: var(--surface-1);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    padding: 14px 18px;
+    text-align: center;
+}
+.summary-card-val {
+    font-size: 1.5rem;
+    font-weight: 800;
+    color: var(--text-pure);
+    font-family: var(--font-mono);
+}
+.summary-card-lbl {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-top: 4px;
+}
+
+/* Comparison Table Styling */
+.table-metric-head {
+    font-weight: 700;
+    color: var(--text-pure);
+    background: var(--surface-2);
 }
 </style>
 """, unsafe_allow_html=True)
 
-
-# ─── Data Caching ────────────────────────────────────────────────────────────
-@st.cache_data(show_spinner="Loading benchmark metadata…")
-def get_cached_metadata():
-    tasks = data_loader.load_all_task_metadata()
-    eligibility = data_loader.load_eligibility_sets()
-    pilot_summary = data_loader.load_pilot_summary_csv()
-    return tasks, eligibility, pilot_summary
-
-
-@st.cache_data(show_spinner="Loading verified predictions…")
-def get_cached_records(run_type: str):
-    run_dir = data_loader.PILOT_GEN_DIR if run_type == "pilot" else data_loader.FULL_GEN_DIR
-    preds, pred_inc = data_loader.load_run_predictions(run_dir)
-    prompts, prompt_inc = data_loader.load_run_prompts(run_dir)
-    eval_recs, eval_inc = data_loader.load_run_functional_eval(run_dir)
-    return preds, prompts, eval_recs, (pred_inc or prompt_inc or eval_inc)
-
-
-@st.cache_resource(show_spinner="Scanning and building AST dependency graph for repository…")
-def get_cached_folder_index(folder_path: str):
-    return repo_indexer.index_repository_folder(folder_path)
-
-
-all_tasks, eligibility_sets, pilot_summary = get_cached_metadata()
-eligible_ids = eligibility_sets["eligible"]
-ineligible_ids = eligibility_sets["ineligible"]
-pilot_preds, pilot_prompts, pilot_evals, _ = get_cached_records("pilot")
-
-
-# ─── Top Application Bar ─────────────────────────────────────────────────────
+# ─── Top App Header ──────────────────────────────────────────────────────────
 st.markdown("""
-<div class="app-header-strip">
-  <div class="app-brand">
-    <div class="brand-logo-badge">⚡</div>
-    <div>
-      <div style="display:flex; align-items:center; gap:8px;">
-        <span class="brand-name">DA-RAG Studio</span>
-        <span class="brand-sub">RESEARCH BENCHMARK</span>
-      </div>
+<div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-subtle); padding-bottom:14px; margin-bottom:16px;">
+  <div>
+    <h2 style="margin:0; font-size:1.6rem; font-weight:800; color:var(--text-pure); letter-spacing:-0.02em;">
+      ⚡ DA-RAG Studio <span style="font-size:0.95rem; font-weight:500; color:var(--brand-400); margin-left:8px;">Live Code Generation & Functional Test Bench</span>
+    </h2>
+    <div style="font-size:0.85rem; color:var(--text-muted); margin-top:4px;">
+      Empirical Repository-Level Code Generation: Baseline (Zero Retrieval) vs DA-RAG-B (AST Dependency Graph Retrieval & Knapsack Packing)
     </div>
   </div>
-  <div class="telemetry-group">
-    <span class="telemetry-chip"><span class="pulse-dot"></span> <strong>Qwen2.5-Coder-1.5B</strong></span>
-    <span class="telemetry-chip">⚡ <strong>NVIDIA RTX 4050 (CUDA)</strong></span>
-    <span class="telemetry-chip">📦 <strong>2,048 Tokens</strong> Budget</span>
-    <span class="telemetry-chip">🏆 Pilot: <strong>8 Passes vs 4 (+100%)</strong></span>
+  <div style="display:flex; gap:10px; align-items:center;">
+    <span class="status-pill status-pass">Qwen2.5-Coder-1.5B</span>
+    <span class="status-pill status-pass">NVIDIA RTX 4050</span>
+    <span class="status-pill status-pass">2,048 Tokens</span>
   </div>
 </div>
 """, unsafe_allow_html=True)
 
+# ─── Session State Initialization ────────────────────────────────────────────
+if "repo_path" not in st.session_state:
+    # Default to standard DevEval exemplar repo
+    st.session_state.repo_path = "/home/Suriya/darag_data/Source_Code/System/fs"
+if "repo_meta" not in st.session_state:
+    st.session_state.repo_meta = None
+if "target_file" not in st.session_state:
+    st.session_state.target_file = "fs/wildcard.py"
+if "func_name" not in st.session_state:
+    st.session_state.func_name = "match_any"
+if "target_sig" not in st.session_state:
+    st.session_state.target_sig = "def match_any(patterns, name):"
+if "target_doc" not in st.session_state:
+    st.session_state.target_doc = "Check if a path matches any pattern in a wildcard list. If patterns is empty, return True."
+if "test_cmd" not in st.session_state:
+    st.session_state.test_cmd = "pytest tests/test_wildcard.py -v"
+if "context_result" not in st.session_state:
+    st.session_state.context_result = None
+if "gen_results" not in st.session_state:
+    st.session_state.gen_results = None
+if "test_results" not in st.session_state:
+    st.session_state.test_results = None
+if "user_approved_tests" not in st.session_state:
+    st.session_state.user_approved_tests = True
 
-# ─── Hero Overview ───────────────────────────────────────────────────────────
+# Pre-load repository metadata if not yet loaded
+if st.session_state.repo_meta is None and st.session_state.repo_path:
+    st.session_state.repo_meta = repo_manager.inspect_repository(st.session_state.repo_path)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STEP 1: SELECT REPOSITORY
+# ══════════════════════════════════════════════════════════════════════════════
 st.markdown("""
-<div class="hero-box">
-  <div class="hero-tag">🔬 Dual-Method Code Generation Benchmark</div>
-  <div class="hero-heading">Observe the Visible Difference: Baseline vs DA-RAG</div>
-  <div class="hero-lead">
-    Zero-Retrieval LLMs frequently hallucinate or misuse APIs on repository-specific functions.
-    DA-RAG extracts AST call graphs and packs transitively reachable definitions under a strict 2,048-token knapsack budget.
-    Run live GPU inference or inspect verified completions side-by-side.
-  </div>
+<div class="step-banner">
+  <span class="step-number">STEP 1</span>
+  <span class="step-title">Select Repository</span>
+  <span class="step-sub">Select a local Python repository on your computer</span>
 </div>
 """, unsafe_allow_html=True)
 
+# Quick repository selectors for live demonstration convenience
+quick_col1, quick_col2, quick_col3, quick_col4 = st.columns([1, 1, 1, 1.2])
+with quick_col1:
+    if st.button("📁 System / fs (Wildcard)", use_container_width=True, help="Standard filesystem repo with test suite"):
+        st.session_state.repo_path = "/home/Suriya/darag_data/Source_Code/System/fs"
+        st.session_state.repo_meta = repo_manager.inspect_repository(st.session_state.repo_path)
+        st.session_state.target_file = "fs/wildcard.py"
+        st.session_state.func_name = "match_any"
+        st.session_state.target_sig = "def match_any(patterns, name):"
+        st.session_state.target_doc = "Check if a path matches any pattern in a wildcard list. If patterns is empty, return True."
+        st.session_state.test_cmd = "pytest tests/test_wildcard.py -v"
+        st.session_state.context_result = None
+        st.session_state.gen_results = None
+        st.session_state.test_results = None
+        st.rerun()
 
-# ─── Navigation Tabs ─────────────────────────────────────────────────────────
-tab_play, tab_bench, tab_method = st.tabs([
-    "⚡  Interactive Playground",
-    "📊  DevEval Benchmarks (1,496 Tasks)",
-    "🔬  Scientific Methodology & DAG Architecture",
-])
+with quick_col2:
+    if st.button("📁 Twtxt (Config)", use_container_width=True, help="Twtxt feed repository"):
+        st.session_state.repo_path = "/home/Suriya/darag_data/Source_Code/Communications/twtxt"
+        st.session_state.repo_meta = repo_manager.inspect_repository(st.session_state.repo_path)
+        st.session_state.target_file = "twtxt/config.py"
+        st.session_state.func_name = "get_following"
+        st.session_state.target_sig = "def get_following(self):"
+        st.session_state.target_doc = "Return list of followed users from the parsed twtxt config."
+        st.session_state.test_cmd = "pytest tests/test_config.py -v"
+        st.session_state.context_result = None
+        st.session_state.gen_results = None
+        st.session_state.test_results = None
+        st.rerun()
 
+with quick_col3:
+    if st.button("📁 DA-RAG Engine", use_container_width=True, help="Current DA-RAG project repository"):
+        st.session_state.repo_path = "/home/Suriya/projects/da-rag"
+        st.session_state.repo_meta = repo_manager.inspect_repository(st.session_state.repo_path)
+        st.session_state.target_file = "src/darag/analysis.py"
+        st.session_state.func_name = "format_summary"
+        st.session_state.target_sig = "def format_summary(results: list) -> str:"
+        st.session_state.target_doc = "Format evaluation run results into a human-readable summary string."
+        st.session_state.test_cmd = "pytest tests/test_cli_smoke.py -v"
+        st.session_state.context_result = None
+        st.session_state.gen_results = None
+        st.session_state.test_results = None
+        st.rerun()
 
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 1 — INTERACTIVE PLAYGROUND
-# ══════════════════════════════════════════════════════════════════════════════
-with tab_play:
-    st.markdown('<div class="stage-strip">1 — Repository Context Source & Target Setup</div>', unsafe_allow_html=True)
+with quick_col4:
+    st.caption("💡 Supports POSIX paths (`/home/...`) and Windows drive paths (`C:\\...`, `/mnt/c/...`).")
 
-    source_mode = st.radio(
-        "Choose Context Retrieval Source:",
-        [
-            "📁  Local Repository Folder (Scan from Disk)",
-            "📤  Upload Python Files or Repo (.py / .zip)",
-            "⚡  Curated Benchmark Presets (DevEval Exemplars)",
-            "✍️  Direct Code & Snippet Paste",
-        ],
-        horizontal=True,
-        index=0,
-        help="Select how DA-RAG discovers context: by indexing a local folder, uploading files directly, or running benchmark presets."
+path_col, btn_col = st.columns([4, 1])
+with path_col:
+    input_path = st.text_input(
+        "Repository Folder Path",
+        value=st.session_state.repo_path,
+        placeholder="/home/Suriya/projects/my-repo or C:\\Users\\... or /mnt/c/...",
+        label_visibility="collapsed"
     )
+with btn_col:
+    load_clicked = st.button("📥 Load Repository", type="primary", use_container_width=True)
 
-    active_repo_index = None
-    target_code_default = ""
-    target_source_default = ""
-    active_preset = None
-    selected_func_name = ""
-    target_selection_id = ""
+if load_clicked:
+    st.session_state.repo_path = input_path.strip()
+    st.session_state.repo_meta = repo_manager.inspect_repository(input_path)
+    st.session_state.context_result = None
+    st.session_state.gen_results = None
+    st.session_state.test_results = None
+    if st.session_state.repo_meta and not st.session_state.repo_meta.error:
+        if st.session_state.repo_meta.root_path:
+            st.session_state.repo_path = st.session_state.repo_meta.root_path
+        if st.session_state.repo_meta.source_files:
+            st.session_state.target_file = st.session_state.repo_meta.source_files[0]
+            st.session_state.test_cmd = st.session_state.repo_meta.proposed_test_cmd
+    st.rerun()
 
-    if source_mode == "📁  Local Repository Folder (Scan from Disk)":
-        folder_col1, folder_col2 = st.columns([1.6, 1.0], gap="medium")
-        available_presets = repo_indexer.get_preset_repo_choices()
-        folder_options = [p["title"] for p in available_presets] + ["✏️  Enter Custom Local Folder Path..."]
+repo_meta: Optional[repo_manager.RepoMetadata] = st.session_state.repo_meta
 
-        with folder_col1:
-            chosen_folder_option = st.selectbox(
-                "Select Detected Local Repository or Custom Path:",
-                folder_options,
-                index=0,
-                help="Choose from benchmark repositories discovered on this machine or enter any custom folder path."
-            )
-            if chosen_folder_option == "✏️  Enter Custom Local Folder Path...":
-                folder_path_input = st.text_input(
-                    "Enter Local Folder Path (Windows e.g. C:\\my_project or Linux /home/...):",
-                    value="/home/Suriya/darag_data/Source_Code/System/fs"
-                )
-            else:
-                matched = next((p for p in available_presets if p["title"] == chosen_folder_option), None)
-                folder_path_input = matched["path"] if matched else "/home/Suriya/darag_data/Source_Code/System/fs"
-
-        with folder_col2:
-            run_live_gpu = st.checkbox(
-                "⚡ Run Live GPU Inference (RTX 4050)",
-                value=True,
-                help="Checked: Executes live Qwen inference on your NVIDIA GPU with repository context."
-            )
-
-        # Index the folder
-        active_repo_index = get_cached_folder_index(folder_path_input)
-        if active_repo_index:
-            st.markdown(f"""
-            <div class="repo-status-box">
-              <div>
-                <span style="font-weight:700; color:var(--dag-400);">📁 Active Repository:</span>
-                <span style="color:var(--text-primary); font-weight:600; margin-left:6px;">{active_repo_index.name}</span>
-                <span style="color:var(--text-muted); font-size:0.8rem; margin-left:8px; font-family:var(--font-mono);">{folder_path_input}</span>
-              </div>
-              <div style="display:flex; gap:10px; align-items:center;">
-                <span class="status-pill status-pill-pass">📄 {len(active_repo_index.files)} Python Files</span>
-                <span class="status-pill status-pill-pass">🌿 {len(active_repo_index.symbols)} AST Symbols</span>
-                <span class="token-chip token-chip-dag">Max Context: 2,048 tok</span>
-              </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            repo_funcs = active_repo_index.get_functions_list()
-            func_options = ["✍️ Custom Function / Type Prompt Below"] + [f"{fn['name']}  ·  ({fn['file_path']})" for fn in repo_funcs[:80]]
-
-            chosen_func_option = st.selectbox(
-                "🎯 Select Target Function to Implement from Repository (or enter custom):",
-                func_options,
-                index=1 if len(func_options) > 1 else 0,
-                help="Pick any function or method discovered in this repository to generate and evaluate with DA-RAG."
-            )
-            target_selection_id = f"folder_{chosen_func_option}"
-
-            if chosen_func_option != "✍️ Custom Function / Type Prompt Below":
-                selected_fn_obj = repo_funcs[func_options.index(chosen_func_option) - 1]
-                target_code_default = selected_fn_obj["prompt_sample"]
-                selected_func_name = selected_fn_obj["name"]
-            else:
-                target_code_default = 'def custom_task():\n    """Custom requirement against this repository."""\n'
-                selected_func_name = "custom_task"
-        else:
-            st.error(f"Could not index folder '{folder_path_input}'. Please verify the path exists and contains Python files.")
-
-    elif source_mode == "📤  Upload Python Files or Repo (.py / .zip)":
-        up_col1, up_col2 = st.columns([1.6, 1.0], gap="medium")
-        with up_col1:
-            uploaded_files = st.file_uploader(
-                "Upload Python Files (.py) or Zipped Repository (.zip):",
-                accept_multiple_files=True,
-                type=["py", "zip"],
-                help="Select one or more .py files or a .zip archive. All AST symbols and files will be indexed immediately."
-            )
-        with up_col2:
-            run_live_gpu = st.checkbox(
-                "⚡ Run Live GPU Inference (RTX 4050)",
-                value=True,
-                help="Checked: Executes live Qwen inference on your NVIDIA GPU with uploaded repository context."
-            )
-            st.markdown("""
-            <div style="font-size:0.8rem; color:var(--text-muted); padding:8px 12px; background:var(--surface-1); border-radius:8px; border:1px solid var(--border-subtle); margin-top:8px;">
-              💡 <strong>Tip:</strong> Upload your module files or a zipped repository. DA-RAG will automatically construct the multi-file AST call graph and retrieve cross-file helpers.
-            </div>
-            """, unsafe_allow_html=True)
-
-        if uploaded_files:
-            active_repo_index = repo_indexer.index_uploaded_files(uploaded_files)
-            st.markdown(f"""
-            <div class="repo-status-box">
-              <div>
-                <span style="font-weight:700; color:var(--dag-400);">📤 Uploaded Repository Active:</span>
-                <span style="color:var(--text-primary); font-weight:600; margin-left:6px;">{len(uploaded_files)} file(s) uploaded</span>
-              </div>
-              <div style="display:flex; gap:10px; align-items:center;">
-                <span class="status-pill status-pill-pass">📄 {len(active_repo_index.files)} Python Files Indexed</span>
-                <span class="status-pill status-pill-pass">🌿 {len(active_repo_index.symbols)} AST Symbols</span>
-                <span class="token-chip token-chip-dag">Max Context: 2,048 tok</span>
-              </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            repo_funcs = active_repo_index.get_functions_list()
-            func_options = ["✍️ Custom Function / Type Prompt Below"] + [f"{fn['name']}  ·  ({fn['file_path']})" for fn in repo_funcs[:80]]
-            chosen_func_option = st.selectbox(
-                "🎯 Select Target Function to Implement from Uploaded Repository:",
-                func_options,
-                index=1 if len(func_options) > 1 else 0,
-                help="Select an uploaded function to test or write a custom prompt."
-            )
-            target_selection_id = f"upload_{chosen_func_option}"
-
-            if chosen_func_option != "✍️ Custom Function / Type Prompt Below":
-                selected_fn_obj = repo_funcs[func_options.index(chosen_func_option) - 1]
-                target_code_default = selected_fn_obj["prompt_sample"]
-                selected_func_name = selected_fn_obj["name"]
-            else:
-                target_code_default = 'def custom_task():\n    """Custom requirement against uploaded repository."""\n'
-                selected_func_name = "custom_task"
-        else:
-            st.info("👆 Please upload one or more .py files or a .zip archive of a repository above to extract context.")
-            target_selection_id = "upload_none"
-
-    elif source_mode == "⚡  Curated Benchmark Presets (DevEval Exemplars)":
-        pre_col1, pre_col2 = st.columns([1.6, 1.0], gap="medium")
-        preset_options = [p["title"] for p in interactive_runner.DEMO_PRESETS]
-        with pre_col1:
-            selected_preset_title = st.selectbox(
-                "Select Benchmark Exemplar:",
-                preset_options,
-                index=0,
-                help="Choose an exemplar where DA-RAG demonstrates clear superiority."
-            )
-        with pre_col2:
-            run_live_gpu = st.checkbox(
-                "⚡ Run Live GPU Inference (RTX 4050)",
-                value=False,
-                help="Unchecked: Loads verified instant completions. Checked: Executes live inference on GPU."
-            )
-        active_preset = next((p for p in interactive_runner.DEMO_PRESETS if p["title"] == selected_preset_title), None)
-        if active_preset:
-            target_code_default = active_preset["sample_input"]
-            target_source_default = active_preset.get("sample_source_code", "")
-            selected_func_name = active_preset["func_name"]
-            target_selection_id = f"preset_{active_preset['id']}"
-
-    else:  # Direct Code & Snippet Paste
-        d_col1, d_col2 = st.columns([1.6, 1.0], gap="medium")
-        with d_col1:
-            st.markdown('<p style="font-size:0.85rem; color:var(--text-muted); margin-top:8px;">Enter custom function signature & supporting repository code manually below.</p>', unsafe_allow_html=True)
-        with d_col2:
-            run_live_gpu = st.checkbox(
-                "⚡ Run Live GPU Inference (RTX 4050)",
-                value=True,
-                help="Executes live inference on GPU."
-            )
-        target_code_default = 'def parse_query_params(url: str):\n    """Parse URL query string and return a dict of unique parameters."""\n'
-        target_source_default = interactive_runner.DEFAULT_CUSTOM_SOURCE_CODE
-        selected_func_name = "parse_query_params"
-        target_selection_id = "custom_manual"
-
-    # Synchronize editor text if selection changed
-    if st.session_state.get("last_target_selection_id") != target_selection_id:
-        st.session_state["last_target_selection_id"] = target_selection_id
-        st.session_state["target_code_editor"] = target_code_default
-
-    input_tab1, input_tab2 = st.tabs([
-        "🎯  1. Target Function Prompt (To Implement)",
-        "📁  2. Repository Context & Source Code Inspection",
-    ])
-
-    with input_tab1:
-        st.markdown('<p style="font-size:0.83rem; color:var(--text-muted); margin-bottom:6px;">Specify the function signature and docstring that Qwen will complete:</p>', unsafe_allow_html=True)
-        input_code_val = st.text_area(
-            "Python Function Signature & Requirement Prompt",
-            value=st.session_state.get("target_code_editor", target_code_default),
-            height=130,
-            label_visibility="collapsed",
-            help="Specify the target function signature and parameter requirements.",
-            key="target_code_editor"
-        )
-
-    with input_tab2:
-        if active_repo_index and active_repo_index.files:
-            st.markdown(f'<p style="font-size:0.83rem; color:var(--text-muted); margin-bottom:6px;">Repository <strong>{active_repo_index.name}</strong> has <strong>{len(active_repo_index.files)}</strong> files and <strong>{len(active_repo_index.symbols)}</strong> symbols. Inspect any source file below:</p>', unsafe_allow_html=True)
-            chosen_file = st.selectbox(
-                "Inspect file from indexed repository:",
-                list(active_repo_index.files.keys()),
-                index=0
-            )
-            if chosen_file:
-                st.code(active_repo_index.files[chosen_file], language="python")
-            input_source_val = ""
-        else:
-            st.markdown('<p style="font-size:0.83rem; color:var(--text-muted); margin-bottom:6px;">Edit or paste supporting repository code (functions, classes, constants). <strong>DA-RAG automatically parses this into AST graph nodes and injects it into Qwen\'s context. Baseline receives zero source code:</strong></p>', unsafe_allow_html=True)
-            input_source_val = st.text_area(
-                "Repository Context Source Code",
-                value=target_source_default,
-                height=170,
-                label_visibility="collapsed",
-                help="Supporting repository functions, classes, or constants for DA-RAG.",
-            )
-
-    # Real-time preview of context retrieval
-    if active_repo_index:
-        preview_items, preview_ctx, preview_toks = active_repo_index.retrieve_context_for_target(
-            target_name=selected_func_name or "target",
-            target_prompt=input_code_val,
-            max_tokens=2048
-        )
-        sym_list = [it["symbol"] for it in preview_items[:6]]
-        sym_str = ", ".join(sym_list) if sym_list else "None detected"
-        st.markdown(f"""
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; margin-bottom:14px; font-size:0.8rem; background:var(--surface-1); padding:8px 14px; border-radius:8px; border:1px solid var(--border-subtle);">
-          <span>🌿 <strong>DA-RAG Context Retrieved from {active_repo_index.name}:</strong> <code style="color:var(--dag-400);">{sym_str}</code> ({len(preview_items)} units)</span>
-          <span>📦 Knapsack Token Cost: <strong style="color:var(--brand-400);">{preview_toks}</strong> / 2,048 tok</span>
-        </div>
-        """, unsafe_allow_html=True)
+if repo_meta:
+    if repo_meta.error:
+        st.error(f"❌ {repo_meta.error}")
     else:
-        parsed_items, _, parsed_toks = interactive_runner.parse_source_code_to_dag(input_source_val, "")
-        sym_list = [it["symbol"] for it in parsed_items[:6]]
-        sym_str = ", ".join(sym_list) if sym_list else "None detected"
+        # Repository telemetry card
+        kf_badges = " ".join([f"`{k}`" for k in repo_meta.key_files.keys()]) if repo_meta.key_files else "None"
         st.markdown(f"""
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; margin-bottom:14px; font-size:0.8rem; background:var(--surface-1); padding:8px 14px; border-radius:8px; border:1px solid var(--border-subtle);">
-          <span>🌿 <strong>Detected AST Symbols:</strong> <code style="color:var(--dag-400);">{sym_str}</code> ({len(parsed_items)} total)</span>
-          <span>📦 Context Budget: <strong style="color:var(--brand-400);">{parsed_toks}</strong> / 2,048 tok</span>
-        </div>
-        """, unsafe_allow_html=True)
-
-    run_btn = st.button("🚀  Run Dual Context Retrieval · Qwen Generation · Evaluation", type="primary")
-
-    state_key = f"{source_mode}_{target_selection_id}_{run_live_gpu}"
-    should_run = run_btn or "last_result" not in st.session_state or (
-        st.session_state.get("last_state_key") != state_key
-    )
-
-    if should_run:
-        with st.spinner("Retrieving repository context, constructing call graph, and executing Qwen inference…"):
-            task_id = active_preset["id"] if active_preset else None
-            result = interactive_runner.run_dual_pipeline(
-                task_id=task_id,
-                custom_code=input_code_val,
-                custom_source_code=input_source_val,
-                repo_index=active_repo_index,
-                run_live_gpu=run_live_gpu,
-                pilot_preds=pilot_preds,
-                pilot_prompts=pilot_prompts,
-                pilot_evals=pilot_evals,
-                pilot_summary=pilot_summary,
-                all_tasks=all_tasks,
-            )
-            st.session_state["last_result"] = result
-            st.session_state["last_state_key"] = state_key
-
-    result = st.session_state.get("last_result")
-
-    if result:
-        eval_data = result["evaluation"]
-        res_none  = result["none"]
-        res_dag   = result["dag"]
-        m_none    = res_none["metrics"]
-        m_dag     = res_dag["metrics"]
-
-        # ── Winner Verdict ───────────────────────────────────────────────────
-        winner = eval_data["winner"]
-        if winner == "dag":
-            v_cls, p_cls = "verdict-dag-win", "verdict-pill-dag"
-        elif winner == "none":
-            v_cls, p_cls = "verdict-none-win", "verdict-pill-none"
-        else:
-            v_cls, p_cls = "verdict-tie-win", "verdict-pill-tie"
-
-        st.markdown(f"""
-        <div class="verdict-box {v_cls}">
-          <div class="verdict-header-row">
-            <span class="verdict-lead">{eval_data['winner_label']}</span>
-            <span class="verdict-pill {p_cls}">{eval_data['delta_str']}</span>
-            <span style="font-size:0.85rem; color:var(--text-muted); font-family:var(--font-mono);">
-              DAG Score: {eval_data['score_dag']}% · Baseline Score: {eval_data['score_none']}%
-            </span>
+        <div class="panel-card">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <div>
+              <span style="font-size:1.15rem; font-weight:700; color:var(--text-pure);">📦 {repo_meta.project_name}</span>
+              <span style="font-size:0.85rem; color:var(--text-muted); margin-left:10px;"><code>{repo_meta.root_path}</code></span>
+            </div>
+            <div>
+              <span class="status-pill status-pass">Language: {repo_meta.language}</span>
+              <span class="status-pill status-pass">{len(repo_meta.source_files)} Source Files</span>
+              <span class="status-pill status-pass">{len(repo_meta.test_files)} Test Files</span>
+            </div>
           </div>
-          <div class="verdict-explanation">{eval_data['narrative']}</div>
+          <div style="display:flex; gap:20px; font-size:0.83rem; color:var(--text-secondary); flex-wrap:wrap;">
+            <span><strong>Framework:</strong> <code>{repo_meta.test_framework}</code></span>
+            <span><strong>Discovered Key Files:</strong> {kf_badges}</span>
+            <span><strong>Security Boundary:</strong> <span style="color:var(--dag-400);">Active (Secrets, .git, venvs filtered)</span></span>
+          </div>
         </div>
         """, unsafe_allow_html=True)
 
-        # ── Section 1: Context Retrieval ──────────────────────────────────────
-        st.markdown('<div class="stage-strip">Stage 1 — Context Retrieval Visualizer</div>', unsafe_allow_html=True)
-        st.markdown('<div class="stage-title">Visible Difference in Injected Context</div>', unsafe_allow_html=True)
-        st.markdown('<p style="color:var(--text-muted); font-size:0.86rem; margin-bottom:16px;">The model receives identical instructions; the sole independent variable is the repository context injected into the prompt.</p>', unsafe_allow_html=True)
+        with st.expander(f"📂 View Repository File Tree Preview ({len(repo_meta.source_files) + len(repo_meta.test_files)} files total)", expanded=False):
+            t_col1, t_col2 = st.columns(2)
+            with t_col1:
+                st.markdown("**Source Files:**")
+                st.code("\n".join(repo_meta.source_files[:25]) or "No source files", language="text")
+            with t_col2:
+                st.markdown("**Test Files:**")
+                st.code("\n".join(repo_meta.test_files[:25]) or "No test files", language="text")
 
-        ctx_col1, ctx_col2 = st.columns(2, gap="medium")
 
-        with ctx_col1:
+# ══════════════════════════════════════════════════════════════════════════════
+# STEP 2: DEFINE FUNCTION TO IMPLEMENT
+# ══════════════════════════════════════════════════════════════════════════════
+st.markdown("""
+<div class="step-banner">
+  <span class="step-number">STEP 2</span>
+  <span class="step-title">Define Function to Implement</span>
+  <span class="step-sub">Select a target file, pick an existing stub or enter signature and requirements</span>
+</div>
+""", unsafe_allow_html=True)
+
+if repo_meta and not repo_meta.error and repo_meta.source_files:
+    f_col1, f_col2 = st.columns([1.5, 2.5], gap="large")
+
+    with f_col1:
+        st.markdown('<p style="font-size:0.85rem; font-weight:600; color:var(--text-secondary); margin-bottom:6px;">Target Python File in Repository:</p>', unsafe_allow_html=True)
+        all_sources = repo_meta.source_files
+        curr_idx = all_sources.index(st.session_state.target_file) if st.session_state.target_file in all_sources else 0
+        selected_file = st.selectbox(
+            "Target File",
+            all_sources,
+            index=curr_idx,
+            label_visibility="collapsed"
+        )
+        if selected_file != st.session_state.target_file:
+            st.session_state.target_file = selected_file
+            # Propose matching test file if available
+            matching_test = repo_manager.find_matching_test_file(repo_meta.root_path, selected_file)
+            if matching_test:
+                st.session_state.test_cmd = f"pytest {matching_test} -v"
+            st.rerun()
+
+        # Extract functions/stubs from selected file using AST
+        stubs = repo_manager.extract_functions_from_file(repo_meta.root_path, st.session_state.target_file)
+        if stubs:
+            stub_options = ["-- Custom Entry --"] + [f"{'⚡ [STUB] ' if s.is_stub else ''}{s.qualname} (line {s.start_line})" for s in stubs]
+            chosen_stub = st.selectbox(
+                "Prefill from Function / Stub in File:",
+                stub_options,
+                index=0,
+                help="Select an existing function or unimplemented stub from the target file."
+            )
+            if chosen_stub != "-- Custom Entry --":
+                clean_name = chosen_stub.replace("⚡ [STUB] ", "").split(" (line ")[0].strip()
+                s_obj = next((s for s in stubs if s.qualname == clean_name), None)
+                if s_obj:
+                    st.session_state.func_name = s_obj.name
+                    st.session_state.target_sig = s_obj.signature
+                    st.session_state.target_doc = s_obj.docstring or f"Implement the {s_obj.name} function according to repository contracts."
+        else:
+            st.info("No top-level functions found in this file. Enter custom signature below.")
+
+    with f_col2:
+        fn_name_input = st.text_input(
+            "Function Name",
+            value=st.session_state.func_name,
+            placeholder="e.g. match_any"
+        )
+        st.session_state.func_name = fn_name_input.strip()
+
+        sig_input = st.text_input(
+            "Function Signature / Header",
+            value=st.session_state.target_sig,
+            placeholder="def match_any(patterns, name):"
+        )
+        st.session_state.target_sig = sig_input.strip()
+
+        doc_input = st.text_area(
+            "Requirements / Docstring",
+            value=st.session_state.target_doc,
+            height=90,
+            placeholder="Docstring, specifications, edge cases, or parameter constraints..."
+        )
+        st.session_state.target_doc = doc_input.strip()
+
+        # Combine into canonical prompt
+        combined_prompt_code = f"{st.session_state.target_sig}\n    \"\"\"\n    {st.session_state.target_doc}\n    \"\"\"\n"
+
+        cmd_col1, cmd_col2 = st.columns([3, 1])
+        with cmd_col1:
+            test_cmd_input = st.text_input(
+                "Test Command (Executed against isolated temporary repository)",
+                value=st.session_state.test_cmd,
+                placeholder="pytest tests/test_wildcard.py -v"
+            )
+            st.session_state.test_cmd = test_cmd_input.strip()
+            if "<" in st.session_state.test_cmd and ">" in st.session_state.test_cmd:
+                st.caption("💡 **Tip:** Replace any placeholder like `<matching_test_file>` with a concrete test file (e.g. `pytest tests/test_admin_session_management.py -v`). If left as `<...>`, DA-RAG will automatically substitute the matching test file.")
+        with cmd_col2:
+            st.markdown('<p style="font-size:0.75rem; color:var(--text-muted); margin-top:28px;">Target: Isolated Copy</p>', unsafe_allow_html=True)
+else:
+    st.warning("Please enter and load a valid repository path above to proceed.")
+    combined_prompt_code = ""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STEP 3: RETRIEVE REPOSITORY CONTEXT (DA-RAG-B)
+# ══════════════════════════════════════════════════════════════════════════════
+st.markdown("""
+<div class="step-banner">
+  <span class="step-number">STEP 3</span>
+  <span class="step-title">Retrieve Repository Context</span>
+  <span class="step-sub">Inspect genuine DA-RAG-B AST dependency retrieval and budget knapsack packing</span>
+</div>
+""", unsafe_allow_html=True)
+
+retr_col1, retr_col2 = st.columns([1, 4])
+with retr_col1:
+    retrieve_btn = st.button("🔍 Retrieve Context (DA-RAG-B)", type="secondary", use_container_width=True)
+
+if retrieve_btn or (st.session_state.context_result is None and repo_meta and not repo_meta.error):
+    with st.spinner("Extracting AST dependency graph and executing DA-RAG-B multi-hop retrieval..."):
+        ctx_res = context_engine.retrieve_darag_context(
+            repo_root=st.session_state.repo_path,
+            target_file_rel=st.session_state.target_file,
+            func_name=st.session_state.func_name,
+            docstring_or_spec=st.session_state.target_doc,
+            target_signature=st.session_state.target_sig,
+            budget_tokens=2048,
+            k=10,
+            hops=2,
+            lambda_weight=0.5
+        )
+        st.session_state.context_result = ctx_res
+
+ctx_res: Optional[context_engine.RetrievalResult] = st.session_state.context_result
+
+if ctx_res:
+    if ctx_res.error:
+        st.error(f"❌ Retrieval Error: {ctx_res.error}")
+    else:
+        # Comparison between Method A and Method B contexts
+        c_col_none, c_col_dag = st.columns(2, gap="medium")
+
+        with c_col_none:
             st.markdown("""
-            <div class="comparison-card comparison-card-none">
-              <div class="comparison-header comparison-header-none">
-                <div class="comparison-header-title">🚫 Baseline · Zero Retrieval</div>
-                <span class="token-chip token-chip-none">0 / 2,048 tok (0% budget)</span>
+            <div class="method-card-none">
+              <div class="method-header-none">
+                <span>🚫 Method A · No Retrieval (none)</span>
+                <span class="status-pill status-fail">0 / 2,048 Tokens (0%)</span>
               </div>
-              <div style="padding: 12px 16px;">
-                <div class="zero-context-void">
-                  <div class="zero-context-icon">⬛</div>
-                  <div class="zero-context-heading">Zero Repository Context</div>
-                  <div class="zero-context-sub">
-                    The prompt contains only the isolated function signature and docstring.
-                    No internal helpers, constants, or exception classes are supplied.
-                  </div>
+              <div style="background:rgba(0,0,0,0.25); border:1px solid var(--border-subtle); border-radius:6px; padding:28px 16px; text-align:center;">
+                <div style="font-size:2rem; margin-bottom:6px;">⬛</div>
+                <div style="font-weight:700; color:var(--text-pure); font-size:0.95rem;">Zero Repository Context Provided</div>
+                <div style="font-size:0.8rem; color:var(--text-muted); margin-top:4px;">
+                  Model receives only the isolated function signature and docstring.
+                  Zero helper functions, class contracts, or internal sentinel values are injected.
                 </div>
               </div>
             </div>
             """, unsafe_allow_html=True)
-            with st.expander("🔍 View Raw Baseline Prompt Sent to Qwen", expanded=False):
-                st.code(res_none["prompt_text"], language="text")
 
-        with ctx_col2:
-            dag_tok = res_dag["context_tokens"]
-            n_units = res_dag["n_context_units"]
+        with c_col_dag:
+            pct_used = int((ctx_res.context_tokens / ctx_res.token_budget) * 100) if ctx_res.token_budget else 0
+            st.markdown(f"""
+            <div class="method-card-dag">
+              <div class="method-header-dag">
+                <span>🌿 Method B · DA-RAG-B (darag_b)</span>
+                <span class="status-pill status-pass">{ctx_res.context_tokens} / {ctx_res.token_budget} Tokens ({pct_used}%) · {len(ctx_res.packed_items)} Units</span>
+              </div>
+              <div style="font-size:0.8rem; color:var(--text-secondary); margin-bottom:8px;">
+                <strong>Retrieved Files:</strong> {", ".join([f'<code>{f}</code>' for f in ctx_res.retrieved_files]) or 'None'}<br>
+                <strong>Key Symbols:</strong> {", ".join([f'<code>{s}</code>' for s in ctx_res.retrieved_symbols[:6]]) or 'None'}
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
 
+            # Interactive SVG Dependency Graph
             svg_html = dag_visualizer.render_dag_graph_svg(
-                target_name=result["target_name"],
-                packed_items=res_dag["packed_items"],
-                tokens=dag_tok,
-                n_units=n_units,
+                target_name=st.session_state.func_name,
+                packed_items=ctx_res.packed_items,
+                tokens=ctx_res.context_tokens,
+                n_units=len(ctx_res.packed_items)
             )
             st.markdown(svg_html, unsafe_allow_html=True)
 
-            if res_dag["context_text"]:
-                with st.expander(f"📦 View Injected Repository Code Context ({dag_tok} tokens)", expanded=True):
-                    st.code(res_dag["context_text"], language="python")
-            if res_dag["packed_items"]:
-                with st.expander(f"📑 Packed Graph Units Table ({n_units} units)", expanded=False):
-                    try:
-                        st.dataframe(pd.DataFrame(res_dag["packed_items"]), width="stretch")
-                    except Exception:
-                        st.dataframe(pd.DataFrame(res_dag["packed_items"]))
-            with st.expander("🔍 View Raw DA-RAG Prompt Sent to Qwen", expanded=False):
-                st.code(res_dag["prompt_text"], language="text")
-
-        # ── Section 2: Generated Code ─────────────────────────────────────────
-        st.markdown('<div class="stage-strip">Stage 2 — Qwen2.5-Coder Generation</div>', unsafe_allow_html=True)
-        st.markdown('<div class="stage-title">Side-by-Side Model Completions</div>', unsafe_allow_html=True)
-
-        gen_col1, gen_col2 = st.columns(2, gap="medium")
-
-        n_passed = res_none.get("eval_rec") and res_none["eval_rec"].get("official_result") == "Pass"
-        d_passed = res_dag.get("eval_rec") and res_dag["eval_rec"].get("official_result") == "Pass"
-
-        badge_none = '<span class="status-pill status-pill-pass">✓ Passed Functional Tests</span>' if n_passed else '<span class="status-pill status-pill-fail">✗ Failed Functional Tests</span>'
-        badge_dag = '<span class="status-pill status-pill-pass">✓ Passed Functional Tests</span>' if d_passed else '<span class="status-pill status-pill-fail">✗ Failed Functional Tests</span>'
-
-        with gen_col1:
-            st.markdown(f"""
-            <div class="comparison-header comparison-header-none" style="border-radius:12px 12px 0 0; border:1px solid rgba(239,68,68,0.3); border-bottom:none;">
-              <span class="comparison-header-title">Baseline Output (none)</span>
-              {badge_none}
-            </div>
-            <div class="gen-telemetry" style="border-left:1px solid rgba(239,68,68,0.3); border-right:1px solid rgba(239,68,68,0.3);">
-              <span>TOKENS: <strong>{res_none['tokens']}</strong></span>
-              <span>LATENCY: <strong>{res_none['latency']:.2f}s</strong></span>
-              <span>SYNTAX: <strong>{m_none['syntax_msg']}</strong></span>
-            </div>
-            """, unsafe_allow_html=True)
-            st.code(res_none["completion"] or "# Empty completion", language="python")
-            if res_none.get("raw_output") and res_none["raw_output"] != res_none["completion"]:
-                with st.expander("View Raw LLM Generation Stream", expanded=False):
-                    st.code(res_none["raw_output"], language="text")
-
-        with gen_col2:
-            st.markdown(f"""
-            <div class="comparison-header comparison-header-dag" style="border-radius:12px 12px 0 0; border:1px solid rgba(16,185,129,0.4); border-bottom:none;">
-              <span class="comparison-header-title">DA-RAG Output (darag_b)</span>
-              {badge_dag}
-            </div>
-            <div class="gen-telemetry" style="border-left:1px solid rgba(16,185,129,0.4); border-right:1px solid rgba(16,185,129,0.4);">
-              <span>TOKENS: <strong>{res_dag['tokens']}</strong></span>
-              <span>LATENCY: <strong>{res_dag['latency']:.2f}s</strong></span>
-              <span>CTX TOKENS: <strong>{dag_tok}</strong></span>
-              <span>SYNTAX: <strong>{m_dag['syntax_msg']}</strong></span>
-            </div>
-            """, unsafe_allow_html=True)
-            st.code(res_dag["completion"] or "# Empty completion", language="python")
-            if res_dag.get("raw_output") and res_dag["raw_output"] != res_dag["completion"]:
-                with st.expander("View Raw LLM Generation Stream", expanded=False):
-                    st.code(res_dag["raw_output"], language="text")
-
-        if result.get("ground_truth"):
-            with st.expander("📖 Ground-Truth Reference Implementation (from Repository)", expanded=False):
-                st.code(result["ground_truth"], language="python")
-
-        # ── Section 3: Evaluation Scorecard ──────────────────────────────────
-        st.markdown('<div class="stage-strip">Stage 3 — Evaluation Scorecard</div>', unsafe_allow_html=True)
-        st.markdown('<div class="stage-title">Multi-Dimensional Scoring Matrix</div>', unsafe_allow_html=True)
-
-        score_none = eval_data["score_none"]
-        score_dag  = eval_data["score_dag"]
-        delta      = eval_data["delta"]
-        delta_str  = f"+{delta}%" if delta > 0 else f"{delta}%"
-
-        st.markdown(f"""
-        <div class="score-deck">
-          <div class="score-deck-cell">
-            <div class="score-cell-label">Baseline · Zero Retrieval</div>
-            <div class="score-cell-number score-cell-number-none">{score_none}<span style="font-size:1.4rem">%</span></div>
-            <div class="score-cell-sub">Isolated prompt evaluation</div>
-          </div>
-          <div class="score-deck-cell score-deck-cell-dag">
-            <div class="score-cell-label">DA-RAG · Dependency Graph</div>
-            <div class="score-cell-number score-cell-number-dag">{score_dag}<span style="font-size:1.4rem">%</span></div>
-            <div class="score-cell-sub">Graph-augmented prompt evaluation</div>
-          </div>
-          <div class="score-deck-cell">
-            <div class="score-cell-label">Performance Advantage</div>
-            <div class="score-cell-number score-cell-number-delta">{delta_str}</div>
-            <div class="score-cell-sub">Reliability gain from context</div>
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        dims = [
-            ("Repository & Dependency Utilization", "dependency_score"),
-            ("Ground-Truth Similarity",             "similarity_score"),
-            ("Python AST Syntax Validity",          "syntax_score"),
-            ("Interface & Contract Conformance",    "interface_score"),
-        ]
-        dim_rows = ""
-        for label, key in dims:
-            vn = m_none.get(key, 0)
-            vd = m_dag.get(key, 0)
-            dim_rows += f"""
-            <div class="dim-row">
-              <div class="dim-name">{label}</div>
-              <div class="dim-bars">
-                <div class="dim-single-bar">
-                  <span class="dim-tag dim-tag-none">None</span>
-                  <progress class="modern-bar bar-none" value="{vn}" max="100" aria-label="{label} baseline score"></progress>
-                  <span class="dim-val" style="color:var(--none-400);">{vn}%</span>
-                </div>
-                <div class="dim-single-bar">
-                  <span class="dim-tag dim-tag-dag">DAG</span>
-                  <progress class="modern-bar bar-dag" value="{vd}" max="100" aria-label="{label} DA-RAG score"></progress>
-                  <span class="dim-val" style="color:var(--dag-400);">{vd}%</span>
-                </div>
-              </div>
-            </div>"""
-
-        st.markdown(f"""
-        <div class="dim-grid-box">
-          {dim_rows}
-        </div>
-        """, unsafe_allow_html=True)
+        # Context inspection expanders
+        exp_col1, exp_col2 = st.columns(2, gap="medium")
+        with exp_col1:
+            with st.expander(f"📦 View Packed Repository Code Supplied to Qwen ({ctx_res.context_tokens} tokens)", expanded=False):
+                st.code(ctx_res.packed_context_text or "# No context units packed", language="python")
+        with exp_col2:
+            with st.expander(f"📑 View Packed Units Details & Scores ({len(ctx_res.packed_items)} units)", expanded=False):
+                if ctx_res.packed_items:
+                    st.dataframe(pd.DataFrame(ctx_res.packed_items)[["symbol", "file", "kind", "mode", "cost", "score", "relation"]], use_container_width=True)
+                if ctx_res.omitted_items:
+                    st.markdown("**Omitted Candidates Due to Token Budget:**")
+                    st.dataframe(pd.DataFrame(ctx_res.omitted_items)[["rank", "symbol", "file", "kind", "estimated_cost", "reason"]], use_container_width=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 2 — BENCHMARK EXPLORER
+# STEP 4: GENERATE BOTH IMPLEMENTATIONS USING QWEN
 # ══════════════════════════════════════════════════════════════════════════════
-with tab_bench:
-    st.markdown('<div class="stage-strip">DevEval Benchmark Explorer</div>', unsafe_allow_html=True)
-    st.markdown('<div class="stage-title">Official Cohorts & Empirical Results</div>', unsafe_allow_html=True)
+st.markdown("""
+<div class="step-banner">
+  <span class="step-number">STEP 4</span>
+  <span class="step-title">Generate Both Implementations Using Qwen</span>
+  <span class="step-sub">Symmetric inference with local Qwen2.5-Coder-1.5B-Instruct on GPU</span>
+</div>
+""", unsafe_allow_html=True)
 
-    b_ctrl, b_info = st.columns([1, 1.8], gap="large")
+gen_btn = st.button("🚀  Generate Both Implementations (Qwen2.5-Coder)", type="primary", use_container_width=True)
 
-    with b_ctrl:
-        run_cohort = st.radio(
-            "Benchmark Cohort",
-            ["Pilot Cohort (50 tasks — official evaluation complete)", "Full Benchmark (1,496 tasks — in progress)"],
-            index=0,
-        )
-        is_pilot = "Pilot" in run_cohort
-        active_preds, active_prompts, active_evals, _ = get_cached_records("pilot" if is_pilot else "full")
-
-        t_ids = (
-            sorted({t for (t, m) in active_preds.keys() if m in ("none", "darag_b")})
-            or sorted({t for (t, m) in pilot_summary.keys()})
-        ) if is_pilot else sorted(eligible_ids)
-
-        filter_b = st.selectbox(
-            "Filter Task Set",
-            [
-                "⭐  DA-RAG Passed & Baseline Failed (5 key tasks)",
-                "✅  DA-RAG Passed — All 8 pilot passes",
-                "All Tasks",
-                "🎯  Eligible Only",
-                "⚠️  Ineligible (Error Analysis)",
-            ],
-            index=0 if is_pilot else 2,
-        )
-
-    # Filter task IDs
-    filtered_ids = []
-    for tid in t_ids:
-        is_el = tid in eligible_ids
-        d_p = (active_evals.get((tid, "darag_b")) or pilot_summary.get((tid, "darag_b")) or {}).get("official_result") == "Pass"
-        n_f = (active_evals.get((tid, "none")) or pilot_summary.get((tid, "none")) or {}).get("official_result") != "Pass"
-        if "DAG Passed & Baseline" in filter_b and d_p and n_f:
-            filtered_ids.append(tid)
-        elif "All 8 pilot" in filter_b and d_p:
-            filtered_ids.append(tid)
-        elif "All Tasks" in filter_b:
-            filtered_ids.append(tid)
-        elif "Eligible" in filter_b and "Ineligible" not in filter_b and is_el:
-            filtered_ids.append(tid)
-        elif "Ineligible" in filter_b and not is_el:
-            filtered_ids.append(tid)
-
-    if not filtered_ids:
-        filtered_ids = t_ids
-
-    with b_info:
-        selected_bench_task = st.selectbox(
-            f"Select Task ({len(filtered_ids)} matching)",
-            filtered_ids,
-            index=0,
-        )
-        t_data = all_tasks.get(selected_bench_task, {})
-        is_t_el = selected_bench_task in eligible_ids
-        elig_badge = '<span class="status-pill status-pill-pass">✓ Eligible</span>' if is_t_el else '<span class="status-pill status-pill-fail">⚠ Ineligible</span>'
-        st.markdown(f"""
-        <div style="margin-top: 8px; padding: 12px 16px; background: var(--surface-1); border: 1px solid var(--border-subtle); border-radius: 10px;">
-          <code style="font-size:0.85rem; color: var(--brand-400);">{selected_bench_task}</code><br>
-          <span style="font-size:0.78rem; color: var(--text-muted);">{t_data.get('project_path','')}</span>
-          &nbsp; {elig_badge}
-        </div>
-        """, unsafe_allow_html=True)
-
-    st.markdown("---")
-
-    res_bench = interactive_runner.run_dual_pipeline(
-        task_id=selected_bench_task,
-        run_live_gpu=False,
-        pilot_preds=active_preds,
-        pilot_prompts=active_prompts,
-        pilot_evals=active_evals,
-        pilot_summary=pilot_summary,
-        all_tasks=all_tasks,
-    )
-    b_eval = res_bench["evaluation"]
-
-    bw = b_eval["winner"]
-    if bw == "dag":
-        b_v_cls, b_p_cls = "verdict-dag-win", "verdict-pill-dag"
-    elif bw == "none":
-        b_v_cls, b_p_cls = "verdict-none-win", "verdict-pill-none"
+if gen_btn:
+    if not st.session_state.func_name or not st.session_state.target_sig:
+        st.error("Please specify a valid function name and signature in Step 2.")
     else:
-        b_v_cls, b_p_cls = "verdict-tie-win", "verdict-pill-tie"
+        with st.spinner("Generating implementations for both Method A and Method B using Qwen2.5-Coder..."):
+            darag_ctx = ctx_res.packed_context_text if ctx_res else ""
+            input_prompt = f"{st.session_state.target_sig}\n    \"\"\"\n    {st.session_state.target_doc}\n    \"\"\"\n"
+            
+            gen_res = interactive_runner.generate_dual_implementations(
+                func_name=st.session_state.func_name,
+                input_code=input_prompt,
+                darag_context_text=darag_ctx,
+                max_new_tokens=384
+            )
+            # Add context units metadata
+            gen_res["none"]["context_units"] = 0
+            gen_res["none"]["context_tokens"] = 0
+            gen_res["darag_b"]["context_units"] = len(ctx_res.packed_items) if ctx_res else 0
+            gen_res["darag_b"]["context_tokens"] = ctx_res.context_tokens if ctx_res else 0
+
+            st.session_state.gen_results = gen_res
+            st.session_state.test_results = None  # Reset tests when fresh code is generated
+
+gen_results = st.session_state.gen_results
+
+if gen_results:
+    res_none = gen_results["none"]
+    res_dag = gen_results["darag_b"]
+
+    g_col1, g_col2 = st.columns(2, gap="medium")
+
+    with g_col1:
+        st.markdown(f"""
+        <div class="method-card-none">
+          <div class="method-header-none">
+            <span>Method A: No Retrieval (none)</span>
+            <span class="status-pill status-fail">Tokens: {res_none['tokens']} · {res_none['latency']:.2f}s</span>
+          </div>
+          <div style="font-size:0.8rem; color:var(--text-muted); margin-bottom:8px;">
+            Syntax: <strong>{res_none['syntax_msg']}</strong> | Context Injected: <strong>0 tokens</strong>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.code(res_none["completion"] or "# Empty completion", language="python")
+        with st.expander("🔍 View Raw Baseline Prompt Sent to Qwen", expanded=False):
+            st.code(res_none["prompt_text"], language="text")
+
+    with g_col2:
+        st.markdown(f"""
+        <div class="method-card-dag">
+          <div class="method-header-dag">
+            <span>Method B: DA-RAG-B (darag_b)</span>
+            <span class="status-pill status-pass">Tokens: {res_dag['tokens']} · {res_dag['latency']:.2f}s</span>
+          </div>
+          <div style="font-size:0.8rem; color:var(--text-muted); margin-bottom:8px;">
+            Syntax: <strong>{res_dag['syntax_msg']}</strong> | Context Injected: <strong>{res_dag['context_tokens']} tokens</strong>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.code(res_dag["completion"] or "# Empty completion", language="python")
+        with st.expander("🔍 View Raw DA-RAG Prompt Sent to Qwen", expanded=False):
+            st.code(res_dag["prompt_text"], language="text")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STEP 5: RUN REAL TESTS FOR BOTH METHODS
+# ══════════════════════════════════════════════════════════════════════════════
+st.markdown("""
+<div class="step-banner">
+  <span class="step-number">STEP 5</span>
+  <span class="step-title">Run Real Tests for Both Methods</span>
+  <span class="step-sub">Execute actual repository test suite in isolated temporary worktrees</span>
+</div>
+""", unsafe_allow_html=True)
+
+if gen_results:
+    t_ctrl1, t_ctrl2 = st.columns([3, 1])
+    with t_ctrl1:
+        st.session_state.user_approved_tests = st.checkbox(
+            "🛡️ Explicit Approval: Run test command in isolated disposable sandbox copies of this repository",
+            value=st.session_state.user_approved_tests,
+            help="Creates separate temporary copies in /tmp, patches the target file, executes pytest, and cleans up."
+        )
+    with t_ctrl2:
+        run_tests_btn = st.button("🧪  Run Tests on Both Implementations", type="primary", use_container_width=True)
+
+    if run_tests_btn:
+        if not st.session_state.user_approved_tests:
+            st.warning("Please check the explicit approval box before executing tests.")
+        elif not st.session_state.test_cmd:
+            st.error("Please specify a valid test command in Step 2.")
+        else:
+            with st.spinner("Running tests in isolated temporary repository copies..."):
+                test_none = test_runner.run_test_in_isolated_copy(
+                    repo_root=st.session_state.repo_path,
+                    target_file_rel=st.session_state.target_file,
+                    func_name=st.session_state.func_name,
+                    generated_code=res_none["completion"],
+                    test_command=st.session_state.test_cmd,
+                    method="none",
+                    timeout_s=30.0,
+                    target_signature=st.session_state.target_sig
+                )
+
+                test_dag = test_runner.run_test_in_isolated_copy(
+                    repo_root=st.session_state.repo_path,
+                    target_file_rel=st.session_state.target_file,
+                    func_name=st.session_state.func_name,
+                    generated_code=res_dag["completion"],
+                    test_command=st.session_state.test_cmd,
+                    method="darag_b",
+                    timeout_s=30.0,
+                    target_signature=st.session_state.target_sig
+                )
+
+                st.session_state.test_results = {
+                    "none": test_none,
+                    "darag_b": test_dag
+                }
+else:
+    st.info("Generate implementations in Step 4 above before running tests.")
+
+test_results = st.session_state.test_results
+
+if test_results:
+    t_none: test_runner.TestExecutionResult = test_results["none"]
+    t_dag: test_runner.TestExecutionResult = test_results["darag_b"]
+
+    def status_badge(status: str) -> str:
+        if status == "PASS":
+            return '<span class="status-pill status-pass">✓ PASS</span>'
+        elif status == "FAIL":
+            return '<span class="status-pill status-fail">✗ FAIL</span>'
+        elif status == "TIMEOUT":
+            return '<span class="status-pill status-timeout">⏱ TIMEOUT</span>'
+        elif status == "INFRASTRUCTURE ERROR":
+            return '<span class="status-pill status-infra">⚙ INFRASTRUCTURE ERROR</span>'
+        elif status == "GENERATION ERROR":
+            return '<span class="status-pill status-fail">⚠️ GENERATION ERROR</span>'
+        else:
+            return '<span class="status-pill status-notrun">NOT RUN</span>'
+
+    t_res_col1, t_res_col2 = st.columns(2, gap="medium")
+
+    with t_res_col1:
+        st.markdown(f"""
+        <div class="method-card-none">
+          <div class="method-header-none">
+            <span>Method A Test Outcome: {status_badge(t_none.status)}</span>
+            <span style="font-size:0.8rem; font-family:var(--font-mono); color:var(--text-muted);">Duration: {t_none.duration_s:.2f}s</span>
+          </div>
+          <div style="font-size:0.85rem; color:var(--text-secondary); margin-bottom:8px;">
+            Passed: <strong style="color:var(--dag-400);">{t_none.tests_passed}</strong> |
+            Failed: <strong style="color:var(--none-400);">{t_none.tests_failed}</strong> |
+            Exit Code: <code>{t_none.exit_code}</code>
+          </div>
+          {f'<div style="font-size:0.8rem; color:var(--none-400);">{t_none.error_details}</div>' if t_none.error_details else ''}
+        </div>
+        """, unsafe_allow_html=True)
+        with st.expander("📄 View Full Test Stdout / Stderr (Method A)", expanded=False):
+            st.code(t_none.stdout or "(No stdout captured)", language="text")
+            if t_none.stderr:
+                st.code(t_none.stderr, language="text")
+
+    with t_res_col2:
+        st.markdown(f"""
+        <div class="method-card-dag">
+          <div class="method-header-dag">
+            <span>Method B Test Outcome: {status_badge(t_dag.status)}</span>
+            <span style="font-size:0.8rem; font-family:var(--font-mono); color:var(--text-muted);">Duration: {t_dag.duration_s:.2f}s</span>
+          </div>
+          <div style="font-size:0.85rem; color:var(--text-secondary); margin-bottom:8px;">
+            Passed: <strong style="color:var(--dag-400);">{t_dag.tests_passed}</strong> |
+            Failed: <strong style="color:var(--none-400);">{t_dag.tests_failed}</strong> |
+            Exit Code: <code>{t_dag.exit_code}</code>
+          </div>
+          {f'<div style="font-size:0.8rem; color:var(--none-400);">{t_dag.error_details}</div>' if t_dag.error_details else ''}
+        </div>
+        """, unsafe_allow_html=True)
+        with st.expander("📄 View Full Test Stdout / Stderr (Method B)", expanded=False):
+            st.code(t_dag.stdout or "(No stdout captured)", language="text")
+            if t_dag.stderr:
+                st.code(t_dag.stderr, language="text")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STEP 6: RESULTS COMPARISON
+# ══════════════════════════════════════════════════════════════════════════════
+st.markdown("""
+<div class="step-banner">
+  <span class="step-number">STEP 6</span>
+  <span class="step-title">Results Comparison</span>
+  <span class="step-sub">Side-by-side empirical scorecard based strictly on executed tests</span>
+</div>
+""", unsafe_allow_html=True)
+
+if test_results and gen_results and ctx_res:
+    t_none: test_runner.TestExecutionResult = test_results["none"]
+    t_dag: test_runner.TestExecutionResult = test_results["darag_b"]
+
+    # Factual result summary
+    if t_dag.status == "PASS" and t_none.status != "PASS":
+        verdict_text = f"🏆 <strong>DA-RAG-B passed {t_dag.tests_passed} tests; no-retrieval passed {t_none.tests_passed} tests.</strong>"
+        v_bg = "var(--dag-bg)"
+        v_border = "var(--dag-border)"
+        narrative = (
+            f"The baseline (none) failed due to missing repository-internal helpers. "
+            f"DA-RAG-B retrieved relevant definitions ({', '.join(ctx_res.retrieved_symbols[:3]) or 'internal helpers'}), "
+            f"enabling Qwen to satisfy all functional assertions in <code>{st.session_state.test_cmd}</code>."
+        )
+    elif t_none.status == "PASS" and t_dag.status == "PASS":
+        verdict_text = f"🤝 <strong>Both implementations passed functional tests ({t_dag.tests_passed} tests).</strong>"
+        v_bg = "rgba(99, 102, 241, 0.12)"
+        v_border = "rgba(99, 102, 241, 0.35)"
+        narrative = "The task specification was self-contained enough that both implementations satisfied the test suite."
+    elif t_dag.status == "FAIL" and t_none.status == "FAIL":
+        verdict_text = f"⚠️ <strong>Both implementations failed test assertions (Passed: DA-RAG-B {t_dag.tests_passed}, None {t_none.tests_passed}).</strong>"
+        v_bg = "rgba(245, 158, 11, 0.1)"
+        v_border = "rgba(245, 158, 11, 0.3)"
+        narrative = "Neither implementation satisfied all assertions. Review test logs above for specific failure traces."
+    else:
+        verdict_text = f"📊 <strong>Test Results: DA-RAG-B ({t_dag.status}) vs None ({t_none.status})</strong>"
+        v_bg = "var(--surface-2)"
+        v_border = "var(--border-subtle)"
+        narrative = f"Method A: {t_none.status} ({t_none.error_details or 'exited ' + str(t_none.exit_code)}). Method B: {t_dag.status} ({t_dag.error_details or 'exited ' + str(t_dag.exit_code)})."
 
     st.markdown(f"""
-    <div class="verdict-box {b_v_cls}">
-      <div class="verdict-header-row">
-        <span class="verdict-lead">{b_eval['winner_label']}</span>
-        <span class="verdict-pill {b_p_cls}">{b_eval['delta_str']}</span>
-        <span style="font-size:0.85rem; color:var(--text-muted); font-family:var(--font-mono);">
-          DAG: {b_eval['score_dag']}% · None: {b_eval['score_none']}%
-        </span>
-      </div>
-      <div class="verdict-explanation">{b_eval['narrative']}</div>
+    <div style="background:{v_bg}; border:1px solid {v_border}; border-radius:8px; padding:16px 20px; margin-bottom:18px;">
+      <div style="font-size:1.1rem; color:var(--text-pure); margin-bottom:6px;">{verdict_text}</div>
+      <div style="font-size:0.86rem; color:var(--text-secondary); line-height:1.5;">{narrative}</div>
     </div>
     """, unsafe_allow_html=True)
 
-    bc1, bc2 = st.columns(2, gap="medium")
-    with bc1:
-        st.markdown('<div style="font-size:0.82rem; font-weight:700; color:var(--none-400); margin-bottom:6px; letter-spacing:0.05em; text-transform:uppercase;">Baseline Completion (none)</div>', unsafe_allow_html=True)
-        st.code(res_bench["none"]["completion"] or "# No completion recorded", language="python")
-    with bc2:
-        st.markdown('<div style="font-size:0.82rem; font-weight:700; color:var(--dag-400); margin-bottom:6px; letter-spacing:0.05em; text-transform:uppercase;">DA-RAG Completion (darag_b)</div>', unsafe_allow_html=True)
-        st.code(res_bench["dag"]["completion"] or "# No completion recorded", language="python")
+    # Professional comparison table matching Section 8 requirements
+    comparison_data = [
+        {"Metric": "Repository context units", "No Retrieval (none)": "0", "DA-RAG-B (darag_b)": str(len(ctx_res.packed_items))},
+        {"Metric": "Context tokens", "No Retrieval (none)": "0", "DA-RAG-B (darag_b)": f"{ctx_res.context_tokens} / {ctx_res.token_budget}"},
+        {"Metric": "Generation latency", "No Retrieval (none)": f"{res_none['latency']:.2f}s", "DA-RAG-B (darag_b)": f"{res_dag['latency']:.2f}s"},
+        {"Metric": "Syntax validation", "No Retrieval (none)": res_none['syntax_msg'], "DA-RAG-B (darag_b)": res_dag['syntax_msg']},
+        {"Metric": "Tests passed", "No Retrieval (none)": str(t_none.tests_passed), "DA-RAG-B (darag_b)": str(t_dag.tests_passed)},
+        {"Metric": "Tests failed", "No Retrieval (none)": str(t_none.tests_failed), "DA-RAG-B (darag_b)": str(t_dag.tests_failed)},
+        {"Metric": "Test execution status", "No Retrieval (none)": t_none.status, "DA-RAG-B (darag_b)": t_dag.status},
+        {"Metric": "Error details", "No Retrieval (none)": t_none.error_details or "None", "DA-RAG-B (darag_b)": t_dag.error_details or "None"},
+    ]
 
+    df_comp = pd.DataFrame(comparison_data)
+    st.table(df_comp.set_index("Metric"))
 
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 3 — METHODOLOGY
-# ══════════════════════════════════════════════════════════════════════════════
-with tab_method:
-    st.markdown('<div class="stage-strip">Architecture & Research Formulation</div>', unsafe_allow_html=True)
-    st.markdown('<div class="stage-title">Why Dependency Graphs Transform Code Retrieval</div>', unsafe_allow_html=True)
-
-    m1, m2 = st.columns(2, gap="large")
-
-    with m1:
-        st.markdown("""
-        ### The Zero-Retrieval Hallucination Problem
-        Standard LLM code generation (**Baseline `none`**) operates on isolated prompt strings. When real-world code relies on repository-specific contracts:
-        - **Internal Sentinel Values**: e.g., `values.unset`
-        - **Project-Internal Helpers**: e.g., `fs.wildcard.imatch`, `_parse_iso8601`
-        - **Custom Exception Hierarchies**: e.g., `FSPathError`, `ConfigException`
-
-        Without repository context, the model hallucinates generic Python standard library calls (like `fnmatch.fnmatch` or `urllib.parse.parse_qs`) that fail edge-case tests.
-        """)
-
-    with m2:
-        st.markdown("""
-        ### The DA-RAG Solution: Graph Traversal + Knapsack Packing
-        DA-RAG formulates retrieval as a **graph-directed Multi-Choice Knapsack Problem (MCKP)**:
-
-        1. **AST Dependency Graph Extraction**: Per-repository call graphs, import dependencies, and type hierarchies.
-        2. **Multi-Hop Traversal**: Walks outgoing edges from the target function to discover transitively needed helpers.
-        3. **Budget Packing (MCKP)**: Selects between full function definitions and lightweight type stubs under a strict **2,048-token** budget.
-
-        ### Pilot Empirical Validation (50 Tasks)
-        | Approach | Pass Rate (35 Eligible) | Gain vs Baseline |
-        |---|---|---|
-        | **DA-RAG-B (Proposed)** | **8 / 35 (22.9%)** ✅ | **+100% (+4 Passes)** |
-        | Dense Retrieval (UnixCoder) | 5 / 35 (14.3%) | +25% (+1 Pass) |
-        | Dense 1-Hop Graph | 5 / 35 (14.3%) | +25% (+1 Pass) |
-        | BM25 Lexical Retrieval | 4 / 35 (11.4%) | 0% |
-        | **Baseline (None / Zero Context)** | **4 / 35 (11.4%)** | *Reference* |
-        """)
-
+    # Side-by-side code review
+    st.markdown('<p style="font-size:0.95rem; font-weight:700; color:var(--text-pure); margin-top:20px; margin-bottom:8px;">Code Implementation Comparison:</p>', unsafe_allow_html=True)
+    c_view1, c_view2 = st.columns(2, gap="medium")
+    with c_view1:
+        st.markdown(f"**Baseline (`none`) Completion** — Status: `{t_none.status}`")
+        st.code(res_none["completion"], language="python")
+    with c_view2:
+        st.markdown(f"**DA-RAG-B (`darag_b`) Completion** — Status: `{t_dag.status}`")
+        st.code(res_dag["completion"], language="python")
+else:
+    st.info("Execute Step 4 (Generation) and Step 5 (Tests) to render the full empirical scorecard.")
 
 # ─── Footer ──────────────────────────────────────────────────────────────────
 st.markdown("""
-<div class="app-footer">
-  <div class="footer-text">
-    🔬 <strong>DA-RAG Studio</strong> · Dependency-Aware Retrieval Augmented Generation · Qwen2.5-Coder-1.5B · DevEval Benchmark
-  </div>
-  <div class="footer-tag">Pilot: DA-RAG 8 vs None 4 Passes</div>
+<div style="margin-top:40px; padding-top:16px; border-top:1px solid var(--border-subtle); display:flex; justify-content:space-between; align-items:center; font-size:0.8rem; color:var(--text-muted);">
+  <div>🔬 <strong>DA-RAG Studio</strong> · Repository-Level Code Generation Test Bench · Qwen2.5-Coder-1.5B · Isolated Pytest Runner</div>
+  <div>WSL 2 Ubuntu · CUDA Enabled</div>
 </div>
 """, unsafe_allow_html=True)
