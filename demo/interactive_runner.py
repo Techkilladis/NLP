@@ -412,6 +412,7 @@ def run_dual_pipeline(
     custom_func_name: Optional[str] = None,
     custom_code: Optional[str] = None,
     custom_source_code: Optional[str] = None,
+    repo_index: Optional[Any] = None,
     run_live_gpu: bool = False,
     pilot_preds: Optional[Dict] = None,
     pilot_prompts: Optional[Dict] = None,
@@ -422,7 +423,7 @@ def run_dual_pipeline(
     """
     Executes the complete dual pipeline for:
     1. None (Baseline): 0 context
-    2. DAG (DA-RAG): Dependency graph context retrieval (from custom source code or pre-indexed repo)
+    2. DAG (DA-RAG): Dependency graph context retrieval (from repository folder, uploaded files, or custom source)
     Then passes both to Qwen, extracts completions, and runs multi-dimensional evaluation.
     """
     if all_tasks is None:
@@ -465,7 +466,17 @@ def run_dual_pipeline(
 
     has_custom_source = bool(custom_source_code and custom_source_code.strip())
 
-    if has_custom_source:
+    if repo_index is not None:
+        # Dynamically retrieve context from the user's chosen repository folder or uploaded files!
+        _, tokenizer = get_or_load_qwen_model()
+        dag_packed_items, dag_ctx_text, dag_tokens = repo_index.retrieve_context_for_target(
+            target_name=func_name,
+            target_prompt=input_code,
+            max_tokens=2048,
+            tokenizer=tokenizer
+        )
+        retrieved_symbols = [it["symbol"] for it in dag_packed_items]
+    elif has_custom_source:
         # Dynamically parse the user's provided / edited source code using AST!
         _, tokenizer = get_or_load_qwen_model()
         dag_packed_items, dag_ctx_text, dag_tokens = parse_source_code_to_dag(
@@ -523,8 +534,8 @@ def run_dual_pipeline(
     toks_dag = 0
     lat_dag = 0.0
 
-    # If the user changed the source code, or if live GPU inference is requested, execute live Qwen
-    should_run_live = run_live_gpu or has_custom_source or (not is_preset_or_benchmark)
+    # If the user selected a repo folder, uploaded files, changed source code, or requested GPU inference:
+    should_run_live = run_live_gpu or (repo_index is not None) or has_custom_source or (not is_preset_or_benchmark)
 
     if should_run_live:
         comp_none, raw_none, toks_none, lat_none = generate_with_live_qwen(prompt_text_none)
@@ -588,7 +599,7 @@ def run_dual_pipeline(
             "tokens": toks_none,
             "latency": lat_none,
             "eval_rec": eval_rec_none,
-            "metrics": eval_result["metrics_none"]
+            "metrics": eval_result.get("eval_none", {})
         },
         # DAG outputs
         "dag": {
@@ -602,7 +613,7 @@ def run_dual_pipeline(
             "tokens": toks_dag,
             "latency": lat_dag,
             "eval_rec": eval_rec_dag,
-            "metrics": eval_result["metrics_dag"]
+            "metrics": eval_result.get("eval_dag", {})
         },
         "evaluation": eval_result
     }

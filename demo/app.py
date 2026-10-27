@@ -16,6 +16,7 @@ import data_loader
 import evaluator
 import dag_visualizer
 import interactive_runner
+import repo_indexer
 
 # ─── Page Configuration ──────────────────────────────────────────────────────
 st.set_page_config(
@@ -365,6 +366,64 @@ div[data-testid="stCheckbox"] label {
     color: var(--text-secondary) !important;
     font-weight: 500 !important;
     font-size: 0.9rem !important;
+}
+
+/* Radio selection buttons (Modern Pills) */
+div[data-testid="stRadio"] > div {
+    gap: 10px !important;
+}
+div[data-testid="stRadio"] label {
+    background: var(--surface-1) !important;
+    border: 1px solid var(--border-subtle) !important;
+    padding: 8px 16px !important;
+    border-radius: 10px !important;
+    cursor: pointer !important;
+    transition: all 0.15s ease !important;
+}
+div[data-testid="stRadio"] label:hover {
+    border-color: var(--brand-500) !important;
+    background: var(--surface-2) !important;
+}
+div[data-testid="stRadio"] label[data-checked="true"],
+div[data-testid="stRadio"] label:has(input:checked) {
+    border-color: var(--brand-500) !important;
+    background: rgba(99, 102, 241, 0.15) !important;
+    box-shadow: 0 0 12px var(--brand-glow) !important;
+}
+
+/* File uploader container */
+div[data-testid="stFileUploader"] {
+    background-color: var(--surface-1) !important;
+    border: 1.5px dashed var(--border-mid) !important;
+    border-radius: 12px !important;
+    padding: 16px !important;
+    transition: border-color 0.2s ease !important;
+}
+div[data-testid="stFileUploader"]:hover {
+    border-color: var(--brand-400) !important;
+}
+div[data-testid="stFileUploader"] section {
+    background-color: transparent !important;
+}
+div[data-testid="stFileUploader"] button {
+    background: var(--surface-2) !important;
+    color: var(--text-primary) !important;
+    border: 1px solid var(--border-mid) !important;
+}
+
+/* Repository status box */
+.repo-status-box {
+    background: var(--surface-1);
+    border: 1px solid rgba(16, 185, 129, 0.35);
+    border-radius: 12px;
+    padding: 14px 20px;
+    margin: 12px 0 18px 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    box-shadow: 0 0 20px var(--dag-glow);
 }
 
 /* ── 6. COMPONENT CARDS ────────────────────────────────────────────────────── */
@@ -780,6 +839,11 @@ def get_cached_records(run_type: str):
     return preds, prompts, eval_recs, (pred_inc or prompt_inc or eval_inc)
 
 
+@st.cache_resource(show_spinner="Scanning and building AST dependency graph for repository…")
+def get_cached_folder_index(folder_path: str):
+    return repo_indexer.index_repository_folder(folder_path)
+
+
 all_tasks, eligibility_sets, pilot_summary = get_cached_metadata()
 eligible_ids = eligibility_sets["eligible"]
 ineligible_ids = eligibility_sets["ineligible"]
@@ -834,115 +898,274 @@ tab_play, tab_bench, tab_method = st.tabs([
 # TAB 1 — INTERACTIVE PLAYGROUND
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_play:
-    st.markdown('<div class="stage-strip">1 — Benchmark Setup & Input</div>', unsafe_allow_html=True)
+    st.markdown('<div class="stage-strip">1 — Repository Context Source & Target Setup</div>', unsafe_allow_html=True)
 
-    ctrl_col, insight_col = st.columns([1.1, 1.5], gap="large")
-
-    preset_options = ["✍️  Custom Function / Prompt Input"] + [p["title"] for p in interactive_runner.DEMO_PRESETS]
-
-    with ctrl_col:
-        selected_mode = st.selectbox(
-            "Select Benchmark Exemplar or Custom Input",
-            preset_options,
-            index=2,  # Default to FS: File Wildcard Matcher
-            help="Choose an exemplar where DA-RAG demonstrates clear superiority, or write custom Python code.",
-        )
-        run_live_gpu = st.checkbox(
-            "⚡ Run Live GPU Inference (Qwen2.5-Coder on CUDA)",
-            value=False,
-            help="Unchecked: Loads verified instant pre-computed completions. Checked: Executes fresh live inference on your RTX 4050 GPU.",
-        )
-
-    active_preset = next(
-        (p for p in interactive_runner.DEMO_PRESETS if p["title"] == selected_mode),
-        None
-    )
-    default_code = (
-        active_preset["sample_input"]
-        if active_preset
-        else 'def parse_query_params(url: str):\n    """Parse URL query string and return a dict of unique parameters."""\n'
-    )
-    default_source_code = (
-        active_preset.get("sample_source_code", "")
-        if active_preset
-        else interactive_runner.DEFAULT_CUSTOM_SOURCE_CODE
+    source_mode = st.radio(
+        "Choose Context Retrieval Source:",
+        [
+            "📁  Local Repository Folder (Scan from Disk)",
+            "📤  Upload Python Files or Repo (.py / .zip)",
+            "⚡  Curated Benchmark Presets (DevEval Exemplars)",
+            "✍️  Direct Code & Snippet Paste",
+        ],
+        horizontal=True,
+        index=0,
+        help="Select how DA-RAG discovers context: by indexing a local folder, uploading files directly, or running benchmark presets."
     )
 
-    with insight_col:
-        if active_preset:
+    active_repo_index = None
+    target_code_default = ""
+    target_source_default = ""
+    active_preset = None
+    selected_func_name = ""
+    target_selection_id = ""
+
+    if source_mode == "📁  Local Repository Folder (Scan from Disk)":
+        folder_col1, folder_col2 = st.columns([1.6, 1.0], gap="medium")
+        available_presets = repo_indexer.get_preset_repo_choices()
+        folder_options = [p["title"] for p in available_presets] + ["✏️  Enter Custom Local Folder Path..."]
+
+        with folder_col1:
+            chosen_folder_option = st.selectbox(
+                "Select Detected Local Repository or Custom Path:",
+                folder_options,
+                index=0,
+                help="Choose from benchmark repositories discovered on this machine or enter any custom folder path."
+            )
+            if chosen_folder_option == "✏️  Enter Custom Local Folder Path...":
+                folder_path_input = st.text_input(
+                    "Enter Local Folder Path (Windows e.g. C:\\my_project or Linux /home/...):",
+                    value="/home/Suriya/darag_data/Source_Code/System/fs"
+                )
+            else:
+                matched = next((p for p in available_presets if p["title"] == chosen_folder_option), None)
+                folder_path_input = matched["path"] if matched else "/home/Suriya/darag_data/Source_Code/System/fs"
+
+        with folder_col2:
+            run_live_gpu = st.checkbox(
+                "⚡ Run Live GPU Inference (RTX 4050)",
+                value=True,
+                help="Checked: Executes live Qwen inference on your NVIDIA GPU with repository context."
+            )
+
+        # Index the folder
+        active_repo_index = get_cached_folder_index(folder_path_input)
+        if active_repo_index:
             st.markdown(f"""
-            <div class="insight-deck">
-              <div class="insight-icon">💡</div>
+            <div class="repo-status-box">
               <div>
-                <div class="insight-title">Scientific Insight · Why DA-RAG Wins Here</div>
-                <div class="insight-text">{active_preset['why_dag_wins']}</div>
+                <span style="font-weight:700; color:var(--dag-400);">📁 Active Repository:</span>
+                <span style="color:var(--text-primary); font-weight:600; margin-left:6px;">{active_repo_index.name}</span>
+                <span style="color:var(--text-muted); font-size:0.8rem; margin-left:8px; font-family:var(--font-mono);">{folder_path_input}</span>
+              </div>
+              <div style="display:flex; gap:10px; align-items:center;">
+                <span class="status-pill status-pill-pass">📄 {len(active_repo_index.files)} Python Files</span>
+                <span class="status-pill status-pill-pass">🌿 {len(active_repo_index.symbols)} AST Symbols</span>
+                <span class="token-chip token-chip-dag">Max Context: 2,048 tok</span>
               </div>
             </div>
             """, unsafe_allow_html=True)
+
+            repo_funcs = active_repo_index.get_functions_list()
+            func_options = ["✍️ Custom Function / Type Prompt Below"] + [f"{fn['name']}  ·  ({fn['file_path']})" for fn in repo_funcs[:80]]
+
+            chosen_func_option = st.selectbox(
+                "🎯 Select Target Function to Implement from Repository (or enter custom):",
+                func_options,
+                index=1 if len(func_options) > 1 else 0,
+                help="Pick any function or method discovered in this repository to generate and evaluate with DA-RAG."
+            )
+            target_selection_id = f"folder_{chosen_func_option}"
+
+            if chosen_func_option != "✍️ Custom Function / Type Prompt Below":
+                selected_fn_obj = repo_funcs[func_options.index(chosen_func_option) - 1]
+                target_code_default = selected_fn_obj["prompt_sample"]
+                selected_func_name = selected_fn_obj["name"]
+            else:
+                target_code_default = 'def custom_task():\n    """Custom requirement against this repository."""\n'
+                selected_func_name = "custom_task"
         else:
+            st.error(f"Could not index folder '{folder_path_input}'. Please verify the path exists and contains Python files.")
+
+    elif source_mode == "📤  Upload Python Files or Repo (.py / .zip)":
+        up_col1, up_col2 = st.columns([1.6, 1.0], gap="medium")
+        with up_col1:
+            uploaded_files = st.file_uploader(
+                "Upload Python Files (.py) or Zipped Repository (.zip):",
+                accept_multiple_files=True,
+                type=["py", "zip"],
+                help="Select one or more .py files or a .zip archive. All AST symbols and files will be indexed immediately."
+            )
+        with up_col2:
+            run_live_gpu = st.checkbox(
+                "⚡ Run Live GPU Inference (RTX 4050)",
+                value=True,
+                help="Checked: Executes live Qwen inference on your NVIDIA GPU with uploaded repository context."
+            )
             st.markdown("""
-            <div class="insight-deck">
-              <div class="insight-icon">✍️</div>
+            <div style="font-size:0.8rem; color:var(--text-muted); padding:8px 12px; background:var(--surface-1); border-radius:8px; border:1px solid var(--border-subtle); margin-top:8px;">
+              💡 <strong>Tip:</strong> Upload your module files or a zipped repository. DA-RAG will automatically construct the multi-file AST call graph and retrieve cross-file helpers.
+            </div>
+            """, unsafe_allow_html=True)
+
+        if uploaded_files:
+            active_repo_index = repo_indexer.index_uploaded_files(uploaded_files)
+            st.markdown(f"""
+            <div class="repo-status-box">
               <div>
-                <div class="insight-title">Custom Function & Source Code Mode</div>
-                <div class="insight-text">
-                  Provide your target function prompt and supporting repository source code in the tabs below.
-                  DA-RAG parses your source code with real AST, draws the dependency call graph, and prompts Qwen with context.
-                </div>
+                <span style="font-weight:700; color:var(--dag-400);">📤 Uploaded Repository Active:</span>
+                <span style="color:var(--text-primary); font-weight:600; margin-left:6px;">{len(uploaded_files)} file(s) uploaded</span>
+              </div>
+              <div style="display:flex; gap:10px; align-items:center;">
+                <span class="status-pill status-pill-pass">📄 {len(active_repo_index.files)} Python Files Indexed</span>
+                <span class="status-pill status-pill-pass">🌿 {len(active_repo_index.symbols)} AST Symbols</span>
+                <span class="token-chip token-chip-dag">Max Context: 2,048 tok</span>
               </div>
             </div>
             """, unsafe_allow_html=True)
+
+            repo_funcs = active_repo_index.get_functions_list()
+            func_options = ["✍️ Custom Function / Type Prompt Below"] + [f"{fn['name']}  ·  ({fn['file_path']})" for fn in repo_funcs[:80]]
+            chosen_func_option = st.selectbox(
+                "🎯 Select Target Function to Implement from Uploaded Repository:",
+                func_options,
+                index=1 if len(func_options) > 1 else 0,
+                help="Select an uploaded function to test or write a custom prompt."
+            )
+            target_selection_id = f"upload_{chosen_func_option}"
+
+            if chosen_func_option != "✍️ Custom Function / Type Prompt Below":
+                selected_fn_obj = repo_funcs[func_options.index(chosen_func_option) - 1]
+                target_code_default = selected_fn_obj["prompt_sample"]
+                selected_func_name = selected_fn_obj["name"]
+            else:
+                target_code_default = 'def custom_task():\n    """Custom requirement against uploaded repository."""\n'
+                selected_func_name = "custom_task"
+        else:
+            st.info("👆 Please upload one or more .py files or a .zip archive of a repository above to extract context.")
+            target_selection_id = "upload_none"
+
+    elif source_mode == "⚡  Curated Benchmark Presets (DevEval Exemplars)":
+        pre_col1, pre_col2 = st.columns([1.6, 1.0], gap="medium")
+        preset_options = [p["title"] for p in interactive_runner.DEMO_PRESETS]
+        with pre_col1:
+            selected_preset_title = st.selectbox(
+                "Select Benchmark Exemplar:",
+                preset_options,
+                index=0,
+                help="Choose an exemplar where DA-RAG demonstrates clear superiority."
+            )
+        with pre_col2:
+            run_live_gpu = st.checkbox(
+                "⚡ Run Live GPU Inference (RTX 4050)",
+                value=False,
+                help="Unchecked: Loads verified instant completions. Checked: Executes live inference on GPU."
+            )
+        active_preset = next((p for p in interactive_runner.DEMO_PRESETS if p["title"] == selected_preset_title), None)
+        if active_preset:
+            target_code_default = active_preset["sample_input"]
+            target_source_default = active_preset.get("sample_source_code", "")
+            selected_func_name = active_preset["func_name"]
+            target_selection_id = f"preset_{active_preset['id']}"
+
+    else:  # Direct Code & Snippet Paste
+        d_col1, d_col2 = st.columns([1.6, 1.0], gap="medium")
+        with d_col1:
+            st.markdown('<p style="font-size:0.85rem; color:var(--text-muted); margin-top:8px;">Enter custom function signature & supporting repository code manually below.</p>', unsafe_allow_html=True)
+        with d_col2:
+            run_live_gpu = st.checkbox(
+                "⚡ Run Live GPU Inference (RTX 4050)",
+                value=True,
+                help="Executes live inference on GPU."
+            )
+        target_code_default = 'def parse_query_params(url: str):\n    """Parse URL query string and return a dict of unique parameters."""\n'
+        target_source_default = interactive_runner.DEFAULT_CUSTOM_SOURCE_CODE
+        selected_func_name = "parse_query_params"
+        target_selection_id = "custom_manual"
+
+    # Synchronize editor text if selection changed
+    if st.session_state.get("last_target_selection_id") != target_selection_id:
+        st.session_state["last_target_selection_id"] = target_selection_id
+        st.session_state["target_code_editor"] = target_code_default
 
     input_tab1, input_tab2 = st.tabs([
         "🎯  1. Target Function Prompt (To Implement)",
-        "📁  2. Repository Source Code (DA-RAG Context & AST Graph)",
+        "📁  2. Repository Context & Source Code Inspection",
     ])
 
     with input_tab1:
         st.markdown('<p style="font-size:0.83rem; color:var(--text-muted); margin-bottom:6px;">Specify the function signature and docstring that Qwen will complete:</p>', unsafe_allow_html=True)
         input_code_val = st.text_area(
             "Python Function Signature & Requirement Prompt",
-            value=default_code,
+            value=st.session_state.get("target_code_editor", target_code_default),
             height=130,
             label_visibility="collapsed",
             help="Specify the target function signature and parameter requirements.",
+            key="target_code_editor"
         )
 
     with input_tab2:
-        st.markdown('<p style="font-size:0.83rem; color:var(--text-muted); margin-bottom:6px;">Edit or paste supporting repository code (functions, classes, constants). <strong>DA-RAG automatically parses this into AST graph nodes and injects it into Qwen\'s context. Baseline receives zero source code:</strong></p>', unsafe_allow_html=True)
-        input_source_val = st.text_area(
-            "Repository Context Source Code",
-            value=default_source_code,
-            height=170,
-            label_visibility="collapsed",
-            help="Supporting repository functions, classes, or constants for DA-RAG.",
+        if active_repo_index and active_repo_index.files:
+            st.markdown(f'<p style="font-size:0.83rem; color:var(--text-muted); margin-bottom:6px;">Repository <strong>{active_repo_index.name}</strong> has <strong>{len(active_repo_index.files)}</strong> files and <strong>{len(active_repo_index.symbols)}</strong> symbols. Inspect any source file below:</p>', unsafe_allow_html=True)
+            chosen_file = st.selectbox(
+                "Inspect file from indexed repository:",
+                list(active_repo_index.files.keys()),
+                index=0
+            )
+            if chosen_file:
+                st.code(active_repo_index.files[chosen_file], language="python")
+            input_source_val = ""
+        else:
+            st.markdown('<p style="font-size:0.83rem; color:var(--text-muted); margin-bottom:6px;">Edit or paste supporting repository code (functions, classes, constants). <strong>DA-RAG automatically parses this into AST graph nodes and injects it into Qwen\'s context. Baseline receives zero source code:</strong></p>', unsafe_allow_html=True)
+            input_source_val = st.text_area(
+                "Repository Context Source Code",
+                value=target_source_default,
+                height=170,
+                label_visibility="collapsed",
+                help="Supporting repository functions, classes, or constants for DA-RAG.",
+            )
+
+    # Real-time preview of context retrieval
+    if active_repo_index:
+        preview_items, preview_ctx, preview_toks = active_repo_index.retrieve_context_for_target(
+            target_name=selected_func_name or "target",
+            target_prompt=input_code_val,
+            max_tokens=2048
         )
-
-    # Real-time preview of parsed AST symbols from the user's source code
-    parsed_items, _, parsed_toks = interactive_runner.parse_source_code_to_dag(input_source_val, "")
-    sym_list = [it["symbol"] for it in parsed_items[:6]]
-    sym_str = ", ".join(sym_list) if sym_list else "None detected"
-
-    st.markdown(f"""
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; margin-bottom:14px; font-size:0.8rem; background:var(--surface-1); padding:8px 14px; border-radius:8px; border:1px solid var(--border-subtle);">
-      <span>🌿 <strong>Detected AST Symbols:</strong> <code style="color:var(--dag-400);">{sym_str}</code> ({len(parsed_items)} total)</span>
-      <span>📦 Context Budget: <strong style="color:var(--brand-400);">{parsed_toks}</strong> / 2,048 tok</span>
-    </div>
-    """, unsafe_allow_html=True)
+        sym_list = [it["symbol"] for it in preview_items[:6]]
+        sym_str = ", ".join(sym_list) if sym_list else "None detected"
+        st.markdown(f"""
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; margin-bottom:14px; font-size:0.8rem; background:var(--surface-1); padding:8px 14px; border-radius:8px; border:1px solid var(--border-subtle);">
+          <span>🌿 <strong>DA-RAG Context Retrieved from {active_repo_index.name}:</strong> <code style="color:var(--dag-400);">{sym_str}</code> ({len(preview_items)} units)</span>
+          <span>📦 Knapsack Token Cost: <strong style="color:var(--brand-400);">{preview_toks}</strong> / 2,048 tok</span>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        parsed_items, _, parsed_toks = interactive_runner.parse_source_code_to_dag(input_source_val, "")
+        sym_list = [it["symbol"] for it in parsed_items[:6]]
+        sym_str = ", ".join(sym_list) if sym_list else "None detected"
+        st.markdown(f"""
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; margin-bottom:14px; font-size:0.8rem; background:var(--surface-1); padding:8px 14px; border-radius:8px; border:1px solid var(--border-subtle);">
+          <span>🌿 <strong>Detected AST Symbols:</strong> <code style="color:var(--dag-400);">{sym_str}</code> ({len(parsed_items)} total)</span>
+          <span>📦 Context Budget: <strong style="color:var(--brand-400);">{parsed_toks}</strong> / 2,048 tok</span>
+        </div>
+        """, unsafe_allow_html=True)
 
     run_btn = st.button("🚀  Run Dual Context Retrieval · Qwen Generation · Evaluation", type="primary")
 
+    state_key = f"{source_mode}_{target_selection_id}_{run_live_gpu}"
     should_run = run_btn or "last_result" not in st.session_state or (
-        active_preset and st.session_state.get("last_preset") != selected_mode
+        st.session_state.get("last_state_key") != state_key
     )
 
     if should_run:
-        with st.spinner("Parsing AST dependency graph and executing Qwen inference…"):
+        with st.spinner("Retrieving repository context, constructing call graph, and executing Qwen inference…"):
             task_id = active_preset["id"] if active_preset else None
             result = interactive_runner.run_dual_pipeline(
                 task_id=task_id,
                 custom_code=input_code_val,
                 custom_source_code=input_source_val,
+                repo_index=active_repo_index,
                 run_live_gpu=run_live_gpu,
                 pilot_preds=pilot_preds,
                 pilot_prompts=pilot_prompts,
@@ -951,7 +1174,7 @@ with tab_play:
                 all_tasks=all_tasks,
             )
             st.session_state["last_result"] = result
-            st.session_state["last_preset"] = selected_mode
+            st.session_state["last_state_key"] = state_key
 
     result = st.session_state.get("last_result")
 
