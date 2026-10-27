@@ -228,6 +228,3 @@ Contributions and feedback are welcome!
 
 Distributed under the MIT License. See [LICENSE](LICENSE) for more information.
 
-<div align="center">
-  <sub>Built with ❤️ for academic research and repository-level code intelligence.</sub>
-</div>
