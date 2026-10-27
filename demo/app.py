@@ -860,7 +860,12 @@ with tab_play:
     default_code = (
         active_preset["sample_input"]
         if active_preset
-        else "def parse_query_params(url: str):\n    '''Parse URL query string and return a dict of unique parameters.'''\n"
+        else 'def parse_query_params(url: str):\n    """Parse URL query string and return a dict of unique parameters."""\n'
+    )
+    default_source_code = (
+        active_preset.get("sample_source_code", "")
+        if active_preset
+        else interactive_runner.DEFAULT_CUSTOM_SOURCE_CODE
     )
 
     with insight_col:
@@ -879,21 +884,51 @@ with tab_play:
             <div class="insight-deck">
               <div class="insight-icon">✍️</div>
               <div>
-                <div class="insight-title">Custom Function Mode</div>
+                <div class="insight-title">Custom Function & Source Code Mode</div>
                 <div class="insight-text">
-                  Provide any Python function signature and docstring. The interactive runner will extract the function name,
-                  query the repository dependency graph, pack reachable symbols under 2,048 tokens, and generate completions for both methods.
+                  Provide your target function prompt and supporting repository source code in the tabs below.
+                  DA-RAG parses your source code with real AST, draws the dependency call graph, and prompts Qwen with context.
                 </div>
               </div>
             </div>
             """, unsafe_allow_html=True)
 
-    input_code_val = st.text_area(
-        "Python Function Signature & Requirement Prompt",
-        value=default_code,
-        height=125,
-        help="Specify the target function signature and parameter requirements.",
-    )
+    input_tab1, input_tab2 = st.tabs([
+        "🎯  1. Target Function Prompt (To Implement)",
+        "📁  2. Repository Source Code (DA-RAG Context & AST Graph)",
+    ])
+
+    with input_tab1:
+        st.markdown('<p style="font-size:0.83rem; color:var(--text-muted); margin-bottom:6px;">Specify the function signature and docstring that Qwen will complete:</p>', unsafe_allow_html=True)
+        input_code_val = st.text_area(
+            "Python Function Signature & Requirement Prompt",
+            value=default_code,
+            height=130,
+            label_visibility="collapsed",
+            help="Specify the target function signature and parameter requirements.",
+        )
+
+    with input_tab2:
+        st.markdown('<p style="font-size:0.83rem; color:var(--text-muted); margin-bottom:6px;">Edit or paste supporting repository code (functions, classes, constants). <strong>DA-RAG automatically parses this into AST graph nodes and injects it into Qwen\'s context. Baseline receives zero source code:</strong></p>', unsafe_allow_html=True)
+        input_source_val = st.text_area(
+            "Repository Context Source Code",
+            value=default_source_code,
+            height=170,
+            label_visibility="collapsed",
+            help="Supporting repository functions, classes, or constants for DA-RAG.",
+        )
+
+    # Real-time preview of parsed AST symbols from the user's source code
+    parsed_items, _, parsed_toks = interactive_runner.parse_source_code_to_dag(input_source_val, "")
+    sym_list = [it["symbol"] for it in parsed_items[:6]]
+    sym_str = ", ".join(sym_list) if sym_list else "None detected"
+
+    st.markdown(f"""
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; margin-bottom:14px; font-size:0.8rem; background:var(--surface-1); padding:8px 14px; border-radius:8px; border:1px solid var(--border-subtle);">
+      <span>🌿 <strong>Detected AST Symbols:</strong> <code style="color:var(--dag-400);">{sym_str}</code> ({len(parsed_items)} total)</span>
+      <span>📦 Context Budget: <strong style="color:var(--brand-400);">{parsed_toks}</strong> / 2,048 tok</span>
+    </div>
+    """, unsafe_allow_html=True)
 
     run_btn = st.button("🚀  Run Dual Context Retrieval · Qwen Generation · Evaluation", type="primary")
 
@@ -902,11 +937,12 @@ with tab_play:
     )
 
     if should_run:
-        with st.spinner("Executing context retrieval and code generation pipelines…"):
+        with st.spinner("Parsing AST dependency graph and executing Qwen inference…"):
             task_id = active_preset["id"] if active_preset else None
             result = interactive_runner.run_dual_pipeline(
                 task_id=task_id,
                 custom_code=input_code_val,
+                custom_source_code=input_source_val,
                 run_live_gpu=run_live_gpu,
                 pilot_preds=pilot_preds,
                 pilot_prompts=pilot_prompts,
